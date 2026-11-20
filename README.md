@@ -107,6 +107,15 @@ GPU runtimes' activation quantization and BF16 rounding; bitwise agreement with 
 runtimes is not expected. This implementation does not claim benchmark parity or
 optimized inference performance.
 
+Full-checkpoint smoke test, November 20, 2026: on an Apple M4 Max with 48 GiB unified
+memory, the pinned checkpoint above (SHA256
+`65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1`) loaded and generated
+the final answer `4` to `What is 2 + 2? Answer briefly.` With `--effort 0
+--max-tokens 64 --context 128`, the 24-token prompt took 3.64 seconds to process and
+39 generated tokens took 3.35 seconds, stopping at EOS. These counts include
+reasoning and protocol tokens; timings exclude loading. This is a functional smoke
+test, not an accuracy evaluation or a general performance benchmark.
+
 ## References
 
 - [Inkling 2 Mini release](https://thinkingmachines.ai/news/inkling-2-mini/)
