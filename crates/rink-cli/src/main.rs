@@ -54,7 +54,7 @@ enum Command {
         #[arg(long, default_value = "checkpoints/inkling-2-mini")]
         model: PathBuf,
         /// Maximum generated tokens per reply or /continue, including thinking.
-        #[arg(long, default_value_t = 512)]
+        #[arg(long, default_value_t = 16384)]
         max_tokens: usize,
         /// Maximum cached sequence length across the entire conversation.
         #[arg(long, default_value_t = 262144)]
