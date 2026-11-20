@@ -49,4 +49,8 @@ fn chat_matches_single_turn_release_template() {
         "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>Hello<|end_message|>"
     );
     assert!(rink_inkling::chat_prompt("Hello", f32::NAN).is_err());
+    assert_eq!(
+        rink_inkling::chat_user_message("And then?"),
+        "<|message_user|><|content_text|>And then?<|end_message|>"
+    );
 }

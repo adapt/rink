@@ -31,18 +31,35 @@ hf download thinkingmachines/Inkling-2-Mini \
   --include config.json tokenizer.json model.safetensors.index.json model-00001-of-00001.safetensors
 
 cargo run --release -- inspect --model checkpoints/inkling-2-mini
+cargo run --release -- chat
+
+# Or run a single prompt:
 cargo run --release -- generate \
   --model checkpoints/inkling-2-mini \
   --prompt 'Explain why the sky is blue in one sentence.' \
   --effort 0.1 --max-tokens 128 --context 2048
 ```
 
-The CLI renders the released single-user-message chat format and stops at the
-configured EOS token. Protocol tokens remain visible, including thinking and answer
-boundaries. `--raw` accepts an already rendered prompt or a plain completion prompt.
-`--effort` accepts a number in `[0, 0.99]` (release default: `0.9`). The complete
-prompt and requested continuation must fit within `--context`; oversized requests
-fail before loading weights. Checkpoints and build output are ignored by Git.
+`chat` opens a terminal conversation. Enter one message per line; replies stream as
+they are generated. Weights load once, and conversation history stays in the model's
+cache until `/reset` or exit. `/quit` exits, `/help` lists commands, and `/continue`
+resumes a reply that hit the token limit. Finish or reset a paused reply before
+sending another message. Protocol markers are hidden; add `--show-thinking` to see
+the reasoning as well as the answer.
+
+Chat defaults to `--model checkpoints/inkling-2-mini --effort 0.1 --max-tokens 512
+--context 4096`. The token limit includes reasoning and protocol tokens; the context
+limit covers the entire conversation. A new message must leave room for the reply
+budget. When the context fills, use `/reset` or restart with a larger `--context`.
+History is kept in memory and is not saved to disk.
+
+`generate` renders the released single-user-message chat format and stops at EOS.
+It leaves protocol markers visible, including thinking and answer boundaries.
+`--raw` accepts an already rendered prompt or a plain completion prompt. Its default
+effort is `0.9`; both commands accept `--effort` in `[0, 0.99]`. For single-prompt
+generation, the complete prompt and requested continuation must fit within
+`--context`; oversized requests fail before loading weights. Checkpoints and build
+output are ignored by Git.
 
 Only the original tensor layout is accepted; MLX conversions, GGUF files, and the
 variable-loop research checkpoint are not supported. Checkpoint files must remain
@@ -55,7 +72,7 @@ unchanged while the model loads them. The vision and drafter weights are not loa
 | `rink-core` | Accelerator/buffer contracts, ordered kernel dispatch, model session interface, greedy sampling |
 | `rink-metal` | Metal devices, buffers, shader compilation, command submission and synchronization |
 | `rink-inkling` (`models/inkling`) | Configuration, native weight layout, loop schedule, caches, decoder and model-specific Metal kernels |
-| `rink-cli` | Local checkpoint inspection, tokenization, chat rendering and streamed text generation |
+| `rink-cli` | Checkpoint inspection, tokenization, interactive terminal chat and streamed text generation |
 
 ```rust,ignore
 use rink_core::AutoregressiveModel;
@@ -101,6 +118,8 @@ cache wraparound, reset, log scaling, vocabulary padding, and context bounds. Ke
 tests separately cover native FP4/FP8 decoding, BF16 matrix multiplication, and biased
 top-k selection with unbiased mixture weights. Regenerate the fixtures with
 `python3 scripts/make_test_fixture.py` (standard library only).
+Chat session tests cover exact token history across turns, EOS, continuation, reset,
+context bounds, and recovery from failed decoding steps.
 
 Float32 activations and direct dequantization intentionally differ from the release
 GPU runtimes' activation quantization and BF16 rounding; bitwise agreement with those
@@ -115,6 +134,8 @@ the final answer `4` to `What is 2 + 2? Answer briefly.` With `--effort 0
 39 generated tokens took 3.35 seconds, stopping at EOS. These counts include
 reasoning and protocol tokens; timings exclude loading. This is a functional smoke
 test, not an accuracy evaluation or a general performance benchmark.
+Terminal chat was also verified with this checkpoint: recall across turns, reset,
+continuation across eight-token chunks, and both answer-only and thinking displays.
 
 ## References
 

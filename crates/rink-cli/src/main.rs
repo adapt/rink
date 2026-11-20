@@ -2,6 +2,11 @@ use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+#[cfg(target_os = "macos")]
+mod chat;
+#[cfg(any(target_os = "macos", test))]
+mod session;
+
 #[derive(Parser)]
 #[command(
     version,
@@ -18,6 +23,23 @@ enum Command {
     Inspect {
         #[arg(long)]
         model: PathBuf,
+    },
+    /// Chat interactively on Metal, keeping the model and conversation in memory.
+    Chat {
+        #[arg(long, default_value = "checkpoints/inkling-2-mini")]
+        model: PathBuf,
+        /// Maximum generated tokens per reply or /continue, including thinking.
+        #[arg(long, default_value_t = 512)]
+        max_tokens: usize,
+        /// Maximum cached sequence length across the entire conversation.
+        #[arg(long, default_value_t = 4096)]
+        context: usize,
+        /// Chat reasoning effort, between 0 and 0.99.
+        #[arg(long, default_value_t = 0.1)]
+        effort: f32,
+        /// Display the model's thinking as well as its answer.
+        #[arg(long)]
+        show_thinking: bool,
     },
     /// Generate text on Metal from a local, original Hugging Face checkpoint.
     Generate {
@@ -79,6 +101,32 @@ fn main() -> Result<()> {
                 "--effort must be in 0..=0.99"
             );
             generate(model, prompt, max_tokens, context, raw, effort)
+        }
+        Command::Chat {
+            model,
+            max_tokens,
+            context,
+            effort,
+            show_thinking,
+        } => {
+            ensure!(max_tokens > 0, "--max-tokens must be positive");
+            ensure!(
+                max_tokens < context,
+                "--context must leave room for a prompt plus --max-tokens"
+            );
+            ensure!(
+                effort.is_finite() && (0.0..=0.99).contains(&effort),
+                "--effort must be in 0..=0.99"
+            );
+            #[cfg(target_os = "macos")]
+            {
+                chat::run(model, max_tokens, context, effort, show_thinking)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (model, show_thinking);
+                anyhow::bail!("chat requires macOS with Metal; CUDA is not implemented yet")
+            }
         }
     }
 }
