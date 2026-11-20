@@ -410,17 +410,51 @@ impl<A: Accelerator> Inkling<A> {
     ) -> Result<A::Buffer> {
         let c = &self.config.text_config;
         let h = c.hidden_size;
+        let taps = c.sconv_kernel_size;
         let top = routing.map_or(0, |_| c.num_experts_per_tok);
         let (kind, state) = if routing.is_some() {
             ("mlp", 3)
         } else {
             ("attn", 2)
         };
+        // Large prompt chunks benefit from parallel mixture reduction and
+        // elementwise kernels. Keep the fusion for decode and short chunks.
+        if self.batch >= 8 {
+            let input = if let Some(routing) = routing {
+                let mixture = self.alloc(h * self.batch)?;
+                self.run(
+                    "expert_sum",
+                    &[&mixture, x, routing],
+                    &[h, top, self.batch],
+                    &[],
+                    h * self.batch,
+                    128,
+                )?;
+                mixture
+            } else {
+                x.clone()
+            };
+            let convolved = self.conv(
+                &input,
+                None,
+                &format!("layers.{}.{kind}_sconv", visit.layer),
+                visit,
+                state,
+                h,
+            )?;
+            if let Some(residual) = residual {
+                let n = h * self.batch;
+                let y = self.alloc(n)?;
+                self.run("add", &[&y, residual, &convolved], &[n], &[], n, 128)?;
+                return Ok(y);
+            }
+            return Ok(convolved);
+        }
         let w = self.w(&format!("layers.{}.{kind}_sconv.weight", visit.layer));
         let history = self.caches[visit.cache].conv[state].clone();
         let geometry = [
             h,
-            c.sconv_kernel_size,
+            taps,
             self.position,
             self.batch,
             top,
@@ -595,37 +629,47 @@ impl<A: Accelerator> Inkling<A> {
             e.factors.clone(),
             e.format,
         );
-        let output_rows = if down { rows } else { rows / 2 };
+        let fused = !down && self.batch < 8;
+        let output_rows = if fused { rows / 2 } else { rows };
         let caps = [c.mlp_gate_softcap, c.mlp_up_softcap];
         let y = self.alloc(output_rows * top * self.batch)?;
         if let Some(groups) = groups {
             self.run(
-                if down {
-                    "expert_matmul"
-                } else {
-                    "expert_swiglu_matmul"
-                },
+                "expert_matmul",
                 &[&y, &w, &scales, &factors, x, &groups.slots, &groups.tiles],
                 &[rows, cols, top, format, usize::from(down), self.batch],
                 &caps,
                 rows.div_ceil(8) * groups.max_tiles * 32,
                 32,
             )?;
+        } else {
+            self.run(
+                if fused {
+                    "expert_swiglu_matvec"
+                } else {
+                    "expert_matvec"
+                },
+                &[&y, &w, &scales, &factors, x, routing],
+                &[rows, cols, top, format, usize::from(down), self.batch],
+                &caps,
+                output_rows * top * self.batch * 32,
+                128,
+            )?;
+        }
+        if down || fused {
             return Ok(y);
         }
+        let n = (rows / 2) * top * self.batch;
+        let activated = self.alloc(n)?;
         self.run(
-            if down {
-                "expert_matvec"
-            } else {
-                "expert_swiglu_matvec"
-            },
-            &[&y, &w, &scales, &factors, x, routing],
-            &[rows, cols, top, format, usize::from(down), self.batch],
+            "swiglu",
+            &[&activated, &y],
+            &[rows / 2, top, self.batch],
             &caps,
-            output_rows * top * self.batch * 32,
+            n,
             128,
         )?;
-        Ok(y)
+        Ok(activated)
     }
     fn group_experts(&mut self, routing: &A::Buffer) -> Result<ExpertGroups<A::Buffer>> {
         let experts = self.config.text_config.n_routed_experts;

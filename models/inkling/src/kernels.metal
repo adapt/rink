@@ -305,12 +305,11 @@ kernel void expert_swiglu_matvec(device float* y [[buffer(0)]], device const uch
 }
 // Same geometry as expert_matvec. Gather grouped inputs, multiply each eight-slot
 // tile by its expert's weights, and scatter back to [token, selected slot, row].
-// The fused variant consumes even gate/up rows and writes half as many columns.
-template <bool activate>
-void expert_matmul_impl(device float* y, device const uchar* w, device const uchar* scales, device const float* factors, device const float* x, device const uint* groups, device const uint* tiles, threadgroup float* a, threadgroup float* b, threadgroup float* result, constant Params& p, uint group, uint lane) {
+kernel void expert_matmul(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const uint* groups [[buffer(5)]], device const uint* tiles [[buffer(6)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint row_tiles=(p.u[0]+7)/8,tile=group/row_tiles;if(tile>=tiles[0])return;
     uint row=(group%row_tiles)*8,expert=tiles[1+2*tile],first=tiles[2+2*tile],stride=p.u[5]+1,count=groups[expert*stride],cols=p.u[1];
     float factor=p.u[3]==0?factors[expert]:1.f;
+    threadgroup float a[256],b[256],result[64];
     simdgroup_float8x8 sum=make_filled_simdgroup_matrix<float,8,8>(0.f);
     for(uint base=0;base<cols;base+=32){
         for(uint i=lane;i<64;i+=32){uint r=i/8,c=(i%8)*4;float4 av=0,bv=0;
@@ -327,16 +326,7 @@ void expert_matmul_impl(device float* y, device const uchar* w, device const uch
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     simdgroup_store(sum,result,8);threadgroup_barrier(mem_flags::mem_threadgroup);
-    if(activate){uint t=first+lane/4,r=row+2*(lane%4);if(t<count && r<p.u[0]){uint slot=groups[expert*stride+1+t];y[slot*(p.u[0]/2)+r/2]=expert_activation(result[2*lane],result[2*lane+1],p.f[0],p.f[1]);}}
-    else for(uint i=lane;i<64;i+=32){uint t=first+i/8,r=row+i%8;if(t<count && r<p.u[0]){uint slot=groups[expert*stride+1+t];y[slot*p.u[0]+r]=result[i];}}
-}
-kernel void expert_matmul(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const uint* groups [[buffer(5)]], device const uint* tiles [[buffer(6)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
-    threadgroup float a[256],b[256],result[64];
-    expert_matmul_impl<false>(y,w,scales,factors,x,groups,tiles,a,b,result,p,group,lane);
-}
-kernel void expert_swiglu_matmul(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const uint* groups [[buffer(5)]], device const uint* tiles [[buffer(6)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
-    threadgroup float a[256],b[256],result[64];
-    expert_matmul_impl<true>(y,w,scales,factors,x,groups,tiles,a,b,result,p,group,lane);
+    for(uint i=lane;i<64;i+=32){uint t=first+i/8,r=row+i%8;if(t<count && r<p.u[0]){uint slot=groups[expert*stride+1+t];y[slot*p.u[0]+r]=result[i];}}
 }
 // intermediate width, top_k; gate softcap, up softcap. Native w13 rows interleave gate/up.
 kernel void swiglu(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) {

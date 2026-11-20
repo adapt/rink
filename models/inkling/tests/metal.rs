@@ -337,28 +337,16 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                         let width = rows / 2;
                         let caps = [1.7, 2.3];
                         let expected_vector = d.allocate(slots * width * 4).unwrap();
-                        let expected_matrix = d.allocate(slots * width * 4).unwrap();
                         let fused_vector = upload(&mut d, &vec![f32::NAN; slots * width]);
-                        let fused_matrix = upload(&mut d, &vec![f32::NAN; slots * width]);
                         let activated = Params::new(&[width, top, batch], &caps);
                         let fused = Params::new(&[rows, cols, top, format, 0, batch], &caps);
-                        // SAFETY: paired gate/up rows are even, including the
-                        // partial final matrix tile. Both fused outputs have
-                        // half the row count and retain original routing slots.
+                        // SAFETY: paired gate/up rows are even. The fused output
+                        // has half the row count and retains original routing slots.
                         unsafe {
                             k.run(
                                 &mut d,
                                 "swiglu",
                                 &[&expected_vector, &old],
-                                activated,
-                                slots * width,
-                                128,
-                            )
-                            .unwrap();
-                            k.run(
-                                &mut d,
-                                "swiglu",
-                                &[&expected_matrix, &new],
                                 activated,
                                 slots * width,
                                 128,
@@ -373,32 +361,10 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                                 128,
                             )
                             .unwrap();
-                            k.run(
-                                &mut d,
-                                "expert_swiglu_matmul",
-                                &[
-                                    &fused_matrix,
-                                    &weights,
-                                    &scales,
-                                    &factors,
-                                    &input,
-                                    &groups,
-                                    &tiles,
-                                ],
-                                fused,
-                                rows.div_ceil(8) * max_tiles * 32,
-                                32,
-                            )
-                            .unwrap();
                         }
                         close(
                             &read(&mut d, &fused_vector),
                             &read(&mut d, &expected_vector),
-                            0.000003,
-                        );
-                        close(
-                            &read(&mut d, &fused_matrix),
-                            &read(&mut d, &expected_matrix),
                             0.000003,
                         );
                     }

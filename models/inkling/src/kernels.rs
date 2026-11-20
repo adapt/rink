@@ -67,7 +67,6 @@ impl<A: Accelerator> Kernels<A> {
             "expert_groups",
             "expert_tiles",
             "expert_matmul",
-            "expert_swiglu_matmul",
             "swiglu",
             "expert_sum",
             "softcap",
