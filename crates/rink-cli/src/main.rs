@@ -56,7 +56,7 @@ enum Command {
         #[arg(long, default_value_t = 4096)]
         context: usize,
         /// Chat reasoning effort, between 0 and 0.99.
-        #[arg(long, default_value_t = 0.1)]
+        #[arg(long, default_value_t = 0.9)]
         effort: f32,
         /// Display the model's thinking as well as its answer.
         #[arg(long)]

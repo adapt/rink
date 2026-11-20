@@ -52,7 +52,7 @@ resumes a reply that hit the token limit. Finish or reset a paused reply before
 sending another message. Protocol markers are hidden; add `--show-thinking` to see
 the reasoning as well as the answer.
 
-Chat defaults to `--model checkpoints/inkling-2-mini --effort 0.1 --max-tokens 512
+Chat defaults to `--model checkpoints/inkling-2-mini --effort 0.9 --max-tokens 512
 --context 4096`. The token limit includes reasoning and protocol tokens; the context
 limit covers the entire conversation. A new message must leave room for the reply
 budget. When the context fills, use `/reset` or restart with a larger `--context`.
