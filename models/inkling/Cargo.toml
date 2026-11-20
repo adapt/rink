@@ -1,0 +1,18 @@
+[package]
+name = "rink-inkling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rink-core.workspace = true
+anyhow.workspace = true
+bytemuck.workspace = true
+half.workspace = true
+memmap2.workspace = true
+safetensors.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+rink-metal.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "rink-metal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rink-core.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal.workspace = true
+objc.workspace = true
+foreign-types.workspace = true

@@ -1,0 +1,5 @@
+/target/
+/checkpoints/
+*.safetensors
+!models/inkling/tests/fixtures/tiny/model.safetensors
+.DS_Store
