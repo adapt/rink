@@ -41,6 +41,26 @@ The `--reference` option on the current executable compares single-token prefill
 and CPU sampling against the optimized path. It uses the current math kernels and
 does not recreate the original revision.
 
+To identify costly GPU operations, run a separate diagnostic:
+
+```sh
+cargo run --release -- bench --profile-kernels --prompt-tokens 32,128 \
+  --decode-tokens 4 --repetitions 2 --context 4096 > kernel-profile.json
+```
+
+This uses Metal stage-boundary timestamp counters, splitting each dispatch into its
+own compute pass. It calibrates GPU timestamps against the CPU clock and aggregates
+durations and invocation counts by kernel in each phase. The timestamp buffer rolls
+over into another command buffer when full. Splitting passes and sampling counters
+add overhead and alter scheduling: use these results to locate expensive kernels,
+then judge an optimization with profiling disabled. Support for timestamp counters
+is checked explicitly; an unsupported GPU reports an error.
+Pass intervals can overlap and include stalls, so their durations are not additive
+and their sum is not the command buffer's elapsed GPU time.
+
+The implementation follows Apple's [counter sampling documentation](https://developer.apple.com/documentation/metal/sampling-gpu-data-into-counter-sample-buffers)
+and [GPU clock calibration procedure](https://developer.apple.com/documentation/metal/converting-gpu-timestamps-into-cpu-time).
+
 ## Changes and costs
 
 | Cost | Original | Optimized |

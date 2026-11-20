@@ -2,7 +2,11 @@
 #[cfg(target_os = "macos")]
 mod device;
 #[cfg(target_os = "macos")]
+mod profile;
+#[cfg(target_os = "macos")]
 pub use device::*;
+#[cfg(target_os = "macos")]
+pub use profile::MetalKernelStats;
 
 #[cfg(not(target_os = "macos"))]
 pub fn unavailable() -> rink_core::Result<()> {

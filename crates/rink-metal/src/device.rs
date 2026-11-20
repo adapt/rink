@@ -1,3 +1,4 @@
+use crate::profile::KernelProfile;
 use foreign_types::ForeignType;
 use metal::{CompileOptions, Device, MTLCommandBufferStatus, MTLResourceOptions, MTLSize};
 use objc::{msg_send, sel, sel_impl};
@@ -33,6 +34,7 @@ impl Buffer for MetalBuffer {
 pub struct MetalKernel {
     pipeline: metal::ComputePipelineState,
     owner: Arc<()>,
+    name: Arc<str>,
 }
 
 pub struct Metal {
@@ -45,6 +47,7 @@ pub struct Metal {
     name: String,
     profiling: bool,
     stats: MetalStats,
+    kernel_profile: Option<KernelProfile>,
 }
 
 impl Metal {
@@ -63,6 +66,7 @@ impl Metal {
             name,
             profiling: false,
             stats: MetalStats::default(),
+            kernel_profile: None,
         })
     }
     pub fn recommended_memory(&self) -> u64 {
@@ -76,6 +80,27 @@ impl Metal {
     }
     pub fn reset_stats(&mut self) {
         self.stats = MetalStats::default();
+        if let Some(profile) = &mut self.kernel_profile {
+            profile.stats.clear();
+        }
+    }
+    /// Diagnostic mode: split dispatches into timestamped compute passes. This
+    /// changes GPU scheduling and adds overhead; disable it for throughput runs.
+    pub fn set_kernel_profiling(&mut self, enabled: bool) -> Result<()> {
+        self.synchronize()?;
+        self.kernel_profile = if enabled {
+            Some(objc::rc::autoreleasepool(|| {
+                KernelProfile::new(&self.device)
+            })?)
+        } else {
+            None
+        };
+        Ok(())
+    }
+    pub fn kernel_stats(
+        &self,
+    ) -> Option<&std::collections::BTreeMap<String, crate::MetalKernelStats>> {
+        self.kernel_profile.as_ref().map(|profile| &profile.stats)
     }
 
     fn new_buffer(&mut self, bytes: usize, data: Option<&[u8]>) -> Result<MetalBuffer> {
@@ -182,6 +207,7 @@ unsafe impl Accelerator for Metal {
             Ok(MetalKernel {
                 pipeline,
                 owner: self.owner.clone(),
+                name: format!("{}::{entry}", source.name).into(),
             })
         })
     }
@@ -192,7 +218,6 @@ unsafe impl Accelerator for Metal {
         threads: usize,
         group_size: usize,
     ) -> Result<()> {
-        let start = self.profiling.then(Instant::now);
         ensure!(
             Arc::ptr_eq(&kernel.owner, &self.owner),
             "kernel belongs to a different device stream"
@@ -216,6 +241,14 @@ unsafe impl Accelerator for Metal {
                 Argument::Skip => {}
             }
         }
+        if self
+            .kernel_profile
+            .as_ref()
+            .is_some_and(KernelProfile::full)
+        {
+            self.synchronize()?;
+        }
+        let start = self.profiling.then(Instant::now);
         objc::rc::autoreleasepool(|| {
             let command = self
                 .pending
@@ -224,7 +257,11 @@ unsafe impl Accelerator for Metal {
             // writes from one dispatch are visible to dependent dispatches.
             let encoder = self.encoder.get_or_insert_with(|| {
                 self.stats.encoders += 1;
-                command.new_compute_command_encoder().to_owned()
+                if let Some(profile) = &mut self.kernel_profile {
+                    profile.encoder(&self.device, command, &kernel.name)
+                } else {
+                    command.new_compute_command_encoder().to_owned()
+                }
             });
             encoder.set_compute_pipeline_state(&kernel.pipeline);
             for (i, arg) in args.iter().enumerate() {
@@ -240,6 +277,9 @@ unsafe impl Accelerator for Metal {
                 MTLSize::new(threads.div_ceil(group_size) as u64, 1, 1),
                 MTLSize::new(group_size as u64, 1, 1),
             );
+            if self.kernel_profile.is_some() {
+                self.encoder.take().unwrap().end_encoding();
+            }
         });
         self.stats.dispatches += 1;
         if let Some(start) = start {
@@ -272,6 +312,9 @@ unsafe impl Accelerator for Metal {
                     )
                 };
                 self.stats.gpu_seconds += (end - begin).max(0.);
+            }
+            if let Some(profile) = &mut self.kernel_profile {
+                profile.resolve(&self.device)?;
             }
         }
         Ok(())

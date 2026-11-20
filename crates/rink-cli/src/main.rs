@@ -36,6 +36,9 @@ enum Command {
         /// Force single-token prefill and CPU sampling for comparison.
         #[arg(long)]
         reference: bool,
+        /// Diagnostic per-kernel GPU timings; adds compute passes and affects throughput.
+        #[arg(long)]
+        profile_kernels: bool,
     },
     /// Validate the model configuration and show its physical/virtual layer layout.
     Inspect {
@@ -87,6 +90,7 @@ fn main() -> Result<()> {
             repetitions,
             context,
             reference,
+            profile_kernels,
         } => {
             ensure!(
                 repetitions > 0 && decode_tokens > 0,
@@ -102,18 +106,19 @@ fn main() -> Result<()> {
             );
             #[cfg(target_os = "macos")]
             {
-                bench::run(
-                    model,
-                    prompt_tokens,
-                    decode_tokens,
+                bench::run(bench::Options {
+                    directory: model,
+                    lengths: prompt_tokens,
+                    decode: decode_tokens,
                     repetitions,
                     context,
                     reference,
-                )
+                    profile_kernels,
+                })
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (model, reference);
+                let _ = (model, reference, profile_kernels);
                 anyhow::bail!("benchmark requires macOS with Metal")
             }
         }

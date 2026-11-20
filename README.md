@@ -124,6 +124,10 @@ execution time, synchronization wait time, and readback bytes. GPU and wait timi
 overlap and must not be added together. Decode uses fixed token counts through EOS.
 `--reference` forces single-token prefill and CPU sampling for comparison.
 It still uses the current math kernels, so it is not the original implementation.
+For diagnostic GPU time by kernel, add `--profile-kernels`. This mode timestamps
+each dispatch using a separate compute pass and changes scheduling; disable it
+when measuring normal throughput. The JSON `kernels` entries report invocation
+counts and GPU durations for each phase.
 Recorded M4 Max results, methodology, and remaining bottlenecks are in
 [the benchmark report](benchmarks/README.md): approximately 6× faster prompt
 processing and 1.5× faster decoding than the initial implementation.
