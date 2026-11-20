@@ -418,7 +418,7 @@ impl<A: Accelerator> Inkling<A> {
         };
         let w = self.w(&format!("layers.{}.{kind}_sconv.weight", visit.layer));
         let history = self.caches[visit.cache].conv[state].clone();
-        let geometry = [
+        let mut geometry = [
             h,
             c.sconv_kernel_size,
             self.position,
@@ -426,12 +426,30 @@ impl<A: Accelerator> Inkling<A> {
             top,
             usize::from(residual.is_some()),
         ];
+        // Convolution advances each channel's history in token order. Larger
+        // prompt chunks benefit from summing their expert outputs in parallel
+        // before that serial loop; decoding fuses the entire tail.
+        let input = if top > 0 && self.batch >= 8 {
+            let mixture = self.alloc(h * self.batch)?;
+            self.run(
+                "expert_sum",
+                &[&mixture, x, routing.expect("top-k requires routing")],
+                &[h, top, self.batch],
+                &[],
+                h * self.batch,
+                128,
+            )?;
+            geometry[4] = 0;
+            mixture
+        } else {
+            x.clone()
+        };
         let y = self.alloc(h * self.batch)?;
         self.run(
             "residual_convolution",
             &[
                 &y,
-                x,
+                &input,
                 &w,
                 &history,
                 residual.unwrap_or(x),
@@ -622,7 +640,13 @@ impl<A: Accelerator> Inkling<A> {
             &[&y, &w, &scales, &factors, x, routing],
             &[rows, cols, top, format, usize::from(down), self.batch],
             &caps,
-            output_rows * top * self.batch * 32,
+            (if down {
+                output_rows
+            } else {
+                output_rows.div_ceil(4)
+            }) * top
+                * self.batch
+                * 32,
             128,
         )?;
         Ok(y)

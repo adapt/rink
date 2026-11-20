@@ -369,7 +369,7 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                                 "expert_swiglu_matvec",
                                 &[&fused_vector, &weights, &scales, &factors, &input, &routing],
                                 fused,
-                                slots * width * 32,
+                                slots * width.div_ceil(4) * 32,
                                 128,
                             )
                             .unwrap();
