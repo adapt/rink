@@ -28,6 +28,41 @@ fn close(a: &[f32], b: &[f32], tol: f32) {
 
 #[test]
 #[ignore = "requires a Metal GPU"]
+fn parallel_routing_keeps_nonfinite_candidates_in_bounds() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    for nan_logits in [false, true] {
+        let logits = upload(&mut d, &[if nan_logits { f32::NAN } else { 0. }; 33]);
+        let bias = upload(
+            &mut d,
+            &[if nan_logits { 0. } else { f32::NEG_INFINITY }; 33],
+        );
+        let out = d.allocate(32 * 8).unwrap();
+        // SAFETY: one row of 33 candidates and 32 selected output pairs.
+        unsafe {
+            k.run(
+                &mut d,
+                "route_parallel",
+                &[&out, &logits, &bias],
+                Params::new(&[33, 32, 1], &[8.]),
+                32,
+                32,
+            )
+            .unwrap();
+        }
+        for (index, pair) in read(&mut d, &out).chunks_exact(2).enumerate() {
+            assert_eq!(pair[0], index as f32);
+            if nan_logits {
+                assert!(pair[1].is_nan());
+            } else {
+                assert_eq!(pair[1], 0.25);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
 fn grouped_experts_match_native_vectors_with_sparse_routes_and_partial_tiles() {
     let mut d = Metal::new().unwrap();
     let k = Kernels::compile(&mut d).unwrap();

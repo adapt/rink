@@ -211,7 +211,10 @@ kernel void route(device float* y [[buffer(0)]], device const float* logits [[bu
 kernel void route_parallel(device float* y [[buffer(0)]], device const float* logits [[buffer(1)]], device const float* bias [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint token=t/32;if(token>=p.u[2])return;logits+=token*p.u[0];y+=token*p.u[1]*2;
     float scores[8],ranks[8],den=0,chosen=0;
-    for(uint j=0;j<8;j++){uint i=lane+32*j;scores[j]=i<p.u[0]?1.f/(1.f+exp(-logits[i])):0.f;ranks[j]=i<p.u[0]?scores[j]+bias[i]:-INFINITY;}
+    for(uint j=0;j<8;j++){uint i=lane+32*j;scores[j]=i<p.u[0]?1.f/(1.f+exp(-logits[i])):0.f;float rank=i<p.u[0]?scores[j]+bias[i]:-INFINITY;
+        // Keep valid candidates above the removed-slot sentinel even when inputs
+        // are nonfinite. Raw NaN scores still propagate to the sampling error flag.
+        ranks[j]=i<p.u[0] && (isnan(rank) || rank==-INFINITY)?-as_type<float>(0x7f7fffffu):rank;}
     for(uint j=0;j<p.u[1];j++){
         float best=-INFINITY;uint index=0xffffffff;
         for(uint k=0;k<8;k++){uint i=lane+32*k;if(i<p.u[0] && (ranks[k]>best || (ranks[k]==best && i<index))){best=ranks[k];index=i;}}
