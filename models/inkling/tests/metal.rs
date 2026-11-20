@@ -1410,3 +1410,107 @@ fn large_context_shares_attention_workspace_and_reuses_it_after_reset() {
     );
     std::fs::remove_dir_all(temporary).unwrap();
 }
+
+#[test]
+#[ignore = "requires a Metal GPU and about 2 GiB for full 256K attention geometry"]
+fn full_256k_attention_geometry_retrieves_the_first_token() {
+    let mut device = Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut device).unwrap();
+    let (capacity, batch, qh, kh, dim) = (262144usize, 32usize, 24usize, 8usize, 128usize);
+    let position = capacity - batch;
+    let elements = capacity * kh * dim;
+    let mut data = vec![0u16; elements];
+    for head in 0..kh {
+        data[head * dim] = half::f16::from_f32(20.).to_bits();
+    }
+    // The last 32 cache entries are not yet written. Attention must use the
+    // fresh input rows for these positions, with causal masking within the chunk.
+    data[position * kh * dim..].fill(half::f16::NAN.to_bits());
+    let keys = device.upload(bytemuck::cast_slice(&data)).unwrap();
+    data.fill(half::f16::from_f32(0.25).to_bits());
+    let first_value = |head: usize, channel: usize| {
+        if channel % 2 == 0 {
+            1. + head as f32 / 8.
+        } else {
+            -1.
+        }
+    };
+    for head in 0..kh {
+        for channel in 0..dim {
+            data[head * dim + channel] = half::f16::from_f32(first_value(head, channel)).to_bits();
+        }
+    }
+    data[position * kh * dim..].fill(half::f16::NAN.to_bits());
+    let values = device.upload(bytemuck::cast_slice(&data)).unwrap();
+    drop(data);
+    let mut queries = vec![0.; batch * qh * dim];
+    for query in queries.chunks_exact_mut(dim) {
+        query[0] = (dim as f32).sqrt();
+    }
+    let query = upload(&mut device, &queries);
+    let new_keys = upload(&mut device, &vec![0.; batch * kh * dim]);
+    let new_values = upload(&mut device, &vec![0.75; batch * kh * dim]);
+    let rel = upload(&mut device, &vec![0.; batch * qh]);
+    let profiles = upload(&mut device, &[0.]);
+    let sinks = upload(&mut device, &vec![0.; batch * qh]);
+    let gate = upload(&mut device, &vec![0.; batch * qh * dim]);
+    let parts = capacity.div_ceil(128);
+    let partials = device.allocate(batch * qh * parts * (dim + 2) * 4).unwrap();
+    let output = device.allocate(batch * qh * dim * 4).unwrap();
+    let geometry = Params::new(
+        &[
+            qh, kh, dim, position, capacity, capacity, 1, 1, parts, batch, 1,
+        ],
+        &[],
+    );
+    // SAFETY: full released-model geometry with FP16 KV buffers, FP32 fresh
+    // rows and a 780 MiB partition workspace. Relative bias is identically zero.
+    unsafe {
+        kernels
+            .run(
+                &mut device,
+                "attention_partition",
+                &[
+                    &partials,
+                    &query,
+                    &keys,
+                    &values,
+                    &new_keys,
+                    &new_values,
+                    &rel,
+                    &profiles,
+                ],
+                geometry,
+                batch * qh * parts * 128,
+                128,
+            )
+            .unwrap();
+        kernels
+            .run(
+                &mut device,
+                "attention_finish",
+                &[&output, &partials, &sinks, &gate],
+                geometry,
+                batch * qh * 32,
+                32,
+            )
+            .unwrap();
+    }
+    let mut expected = Vec::with_capacity(batch * qh * dim);
+    for token in 0..batch {
+        let n = position + token + 1;
+        // The first cached key scores 20; every other key and the sink score 0.
+        // Summing these weights analytically avoids a second huge attention matrix.
+        let first_weight = 20f64.exp();
+        let denominator = first_weight + n as f64;
+        for head in 0..qh {
+            for channel in 0..dim {
+                let numerator = first_weight * f64::from(first_value(head / (qh / kh), channel))
+                    + (position - 1) as f64 * 0.25
+                    + (token + 1) as f64 * 0.75;
+                expected.push((0.5 * numerator / denominator) as f32);
+            }
+        }
+    }
+    close(&read(&mut device, &output), &expected, 0.00001);
+}

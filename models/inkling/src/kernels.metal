@@ -379,8 +379,18 @@ kernel void attention_partition(device float* out [[buffer(0)]], device const fl
 kernel void attention_finish(device float* y [[buffer(0)]], device const float* parts [[buffer(1)]], device const float* sinks [[buffer(2)]], device const float* gate [[buffer(3)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint query=t/32,d=p.u[2],n=p.u[8];if(query>=p.u[0]*p.u[9])return;
     uint base=query*n*(d+2);float mx=sinks[query];for(uint j=lane;j<n;j+=32)mx=max(mx,parts[base+j*(d+2)]);mx=simd_max(mx);
-    float den=0;for(uint j=lane;j<n;j+=32)den+=parts[base+j*(d+2)+1]*exp(parts[base+j*(d+2)]-mx);den=simd_sum(den)+exp(sinks[query]-mx);
-    for(uint i=lane;i<d;i+=32){float sum=0;for(uint j=0;j<n;j++)sum+=parts[base+j*(d+2)+2+i]*exp(parts[base+j*(d+2)]-mx);
+    // Thousands of tiny partition contributions can otherwise round away, or
+    // round upward systematically, beside a dominant partition. Compensate long
+    // reductions while retaining the short-context accumulation order.
+    float den=0;
+    if(n<=128){for(uint j=lane;j<n;j+=32)den+=parts[base+j*(d+2)+1]*exp(parts[base+j*(d+2)]-mx);}
+    else {float error=0;for(uint j=lane;j<n;j+=32){float term=parts[base+j*(d+2)+1]*exp(parts[base+j*(d+2)]-mx)-error;
+        float next=den+term;error=(next-den)-term;den=next;}}
+    den=simd_sum(den)+exp(sinks[query]-mx);
+    for(uint i=lane;i<d;i+=32){float sum=0;
+        if(n<=128){for(uint j=0;j<n;j++)sum+=parts[base+j*(d+2)+2+i]*exp(parts[base+j*(d+2)]-mx);}
+        else {float error=0;for(uint j=0;j<n;j++){float term=parts[base+j*(d+2)+2+i]*exp(parts[base+j*(d+2)]-mx)-error;
+            float next=sum+term;error=(next-sum)-term;sum=next;}}
         y[query*d+i]=(sum/den)/(1.f+exp(-gate[query*d+i]));}
 }
 kernel void argmax_partial(device Choice* y [[buffer(0)]], device const float* x [[buffer(1)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {

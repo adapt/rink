@@ -174,6 +174,10 @@ FP16 and FP32 caches have independent scalar decoder references. Cache tests cov
 rounding, ring writes, memory guards, and attention at 8K, 64K, and 256K positions;
 a memory test checks that workspace grows with the largest layer rather than the
 number of layer visits, and is reused across chunks, decoding, and reset.
+A full-size 256K attention test uses the released head dimensions, a 32-token
+batch, and the 780 MiB workspace to verify retrieval of the first cached token.
+Long attention reductions use compensated FP32 summation to preserve small
+contributions beside dominant partitions.
 Regenerate the fixtures with
 `python3 scripts/make_test_fixture.py` (standard library only).
 Chat session tests cover exact token history across turns, EOS, continuation, reset,
