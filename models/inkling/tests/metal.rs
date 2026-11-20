@@ -28,6 +28,166 @@ fn close(a: &[f32], b: &[f32], tol: f32) {
 
 #[test]
 #[ignore = "requires a Metal GPU"]
+fn grouped_experts_match_native_vectors_with_sparse_routes_and_partial_tiles() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    let experts = 37usize;
+    let rows = 11usize;
+    let top = 3usize;
+    for (format, cols) in [
+        (0usize, 16usize),
+        (0usize, 32usize),
+        (0, 160),
+        (1, 32),
+        (1, 160),
+        (2, 17),
+        (2, 160),
+    ] {
+        let count = experts * rows * cols;
+        let weights = match format {
+            0 => d
+                .upload(
+                    &(0..count / 2)
+                        .map(|i| ((i * 7 % 16) | ((i * 11 % 16) << 4)) as u8)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            1 => d
+                .upload(
+                    &(0..count)
+                        .map(|i| [0x00, 0x01, 0x38, 0xbc, 0x10, 0xb0, 0x3c, 0x40][i % 8])
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            _ => upload(
+                &mut d,
+                &(0..count)
+                    .map(|i| ((i * 17 % 43) as f32 - 21.) / 29.)
+                    .collect::<Vec<_>>(),
+            ),
+        };
+        let scale_values: Vec<u8> = match format {
+            0 => (0..count / 16).map(|i| [0x30, 0x38, 0x40][i % 3]).collect(),
+            1 => (0..count / 32).map(|i| [126, 127, 128][i % 3]).collect(),
+            _ => vec![0; 4],
+        };
+        let scales = d.upload(&scale_values).unwrap();
+        let factors = upload(
+            &mut d,
+            &(0..experts)
+                .map(|i| (i % 7 + 1) as f32 / 8.)
+                .collect::<Vec<_>>(),
+        );
+        for batch in [2usize, 8, 17, 32, 33] {
+            for sparse in [false, true] {
+                let routes: Vec<_> = (0..batch * top)
+                    .flat_map(|slot| {
+                        let e = if sparse {
+                            [0, 5, experts - 1][slot % top]
+                        } else {
+                            (slot / top * 7 + slot % top * 11) % experts
+                        };
+                        [e as f32, 1. / top as f32]
+                    })
+                    .collect();
+                let routing = upload(&mut d, &routes);
+                let slots = batch * top;
+                let max_tiles = (slots + 7 * experts.min(slots)) / 8;
+                let groups = d.upload(&vec![0xff; experts * (batch + 1) * 4]).unwrap();
+                let tiles = d.upload(&vec![0xff; (1 + 2 * max_tiles) * 4]).unwrap();
+                // SAFETY: each token selects distinct valid experts, group lists
+                // have room for every token, and the tile list uses a proven bound.
+                unsafe {
+                    k.run(
+                        &mut d,
+                        "expert_groups",
+                        &[&groups, &routing],
+                        Params::new(&[experts, top, batch], &[]),
+                        experts * 32,
+                        32,
+                    )
+                    .unwrap();
+                    k.run(
+                        &mut d,
+                        "expert_tiles",
+                        &[&tiles, &groups],
+                        Params::new(&[experts, batch], &[]),
+                        32,
+                        32,
+                    )
+                    .unwrap();
+                }
+                let ints = |bytes: Vec<u8>| {
+                    bytes
+                        .chunks_exact(4)
+                        .map(|v| u32::from_le_bytes(v.try_into().unwrap()))
+                        .collect::<Vec<_>>()
+                };
+                let actual_groups = ints(d.read(&groups).unwrap());
+                let actual_tiles = ints(d.read(&tiles).unwrap());
+                let mut expected_tiles = Vec::new();
+                for e in 0..experts {
+                    let expected: Vec<_> = (0..slots)
+                        .filter(|&slot| routes[2 * slot] as usize == e)
+                        .map(|slot| slot as u32)
+                        .collect();
+                    let base = e * (batch + 1);
+                    assert_eq!(actual_groups[base] as usize, expected.len());
+                    assert_eq!(
+                        &actual_groups[base + 1..base + 1 + expected.len()],
+                        &expected
+                    );
+                    for first in (0..expected.len()).step_by(8) {
+                        expected_tiles.extend([e as u32, first as u32]);
+                    }
+                }
+                assert_eq!(actual_tiles[0] as usize, expected_tiles.len() / 2);
+                assert_eq!(&actual_tiles[1..1 + expected_tiles.len()], &expected_tiles);
+                for down in [0, 1] {
+                    let input = upload(
+                        &mut d,
+                        &(0..if down == 1 {
+                            slots * cols
+                        } else {
+                            batch * cols
+                        })
+                            .map(|i| ((i * 13 % 41) as f32 - 20.) / 31.)
+                            .collect::<Vec<_>>(),
+                    );
+                    let old = d.allocate(slots * rows * 4).unwrap();
+                    let new = upload(&mut d, &vec![f32::NAN; slots * rows]);
+                    let p = Params::new(&[rows, cols, top, format, down, batch], &[]);
+                    // SAFETY: native weights and scales use validated block widths;
+                    // inputs match shared/per-slot mode and outputs cover every slot.
+                    unsafe {
+                        k.run(
+                            &mut d,
+                            "expert_matvec",
+                            &[&old, &weights, &scales, &factors, &input, &routing],
+                            p,
+                            slots * rows * 32,
+                            128,
+                        )
+                        .unwrap();
+                        k.run(
+                            &mut d,
+                            "expert_matmul",
+                            &[&new, &weights, &scales, &factors, &input, &groups, &tiles],
+                            p,
+                            rows.div_ceil(8) * max_tiles * 32,
+                            32,
+                        )
+                        .unwrap();
+                    }
+                    close(&read(&mut d, &new), &read(&mut d, &old), 0.0002);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
 fn fused_controllers_match_separate_projections_for_dtypes_and_tiles() {
     let mut d = Metal::new().unwrap();
     let k = Kernels::compile(&mut d).unwrap();

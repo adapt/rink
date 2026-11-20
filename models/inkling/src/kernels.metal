@@ -238,6 +238,62 @@ kernel void expert_matvec(device float* y [[buffer(0)]], device const uchar* w [
     }else{for(uint c=lane;c<cols;c+=32){uint idx=(expert*p.u[0]+row)*cols+c;sum+=((device const float*)w)[idx]*x[c];}}
     sum=simd_sum(sum);if(lane==0)y[out]=sum;
 }
+// experts, top_k, batch. Each expert owns [count, original routing slots...].
+// One SIMD group per expert, compacting matching tokens in their original order.
+kernel void expert_groups(device uint* groups [[buffer(0)]], device const float* routing [[buffer(1)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint expert=t/32;if(expert>=p.u[0])return;uint count=0,base=expert*(p.u[2]+1);
+    for(uint token_base=0;token_base<p.u[2];token_base+=32){uint token=token_base+lane,slot=0xffffffff;
+        if(token<p.u[2])for(uint j=0;j<p.u[1];j++)if(uint(routing[2*(token*p.u[1]+j)])==expert)slot=token*p.u[1]+j;
+        uint valid=uint(slot!=0xffffffff),offset=simd_prefix_exclusive_sum(valid);
+        if(valid)groups[base+1+count+offset]=slot;count+=simd_sum(valid);
+    }
+    if(lane==0)groups[base]=count;
+}
+// experts, batch. Compact the nonempty eight-token expert tiles into
+// [tile_count, expert, first_grouped_slot, ...]. One SIMD group builds the list.
+kernel void expert_tiles(device uint* tiles [[buffer(0)]], device const uint* groups [[buffer(1)]], constant Params& p [[buffer(15)]], uint lane [[thread_index_in_simdgroup]]) {
+    uint total=0;
+    for(uint base=0;base<p.u[0];base+=32){uint expert=base+lane,n=expert<p.u[0]?(groups[expert*(p.u[1]+1)]+7)/8:0;
+        uint offset=simd_prefix_exclusive_sum(n);
+        for(uint j=0;j<n;j++){uint i=1+2*(total+offset+j);tiles[i]=expert;tiles[i+1]=j*8;}
+        total+=simd_sum(n);
+    }
+    if(lane==0)tiles[0]=total;
+}
+// Four consecutive native expert weights; quantized row widths are block-aligned.
+float4 expert_weight4(device const uchar* w, device const uchar* scales, uint idx, uint format, float factor) {
+    float4 v;const float lut[8]={0.f,.5f,1.f,1.5f,2.f,3.f,4.f,6.f};
+    if(format==0){uint codes=*((device const ushort*)(w+idx/2));float scale=fp8(scales[idx/16]);
+        for(uint j=0;j<4;j++){uint code=(codes>>(4*j))&15;v[j]=lut[code&7]*(code&8?-1.f:1.f)*scale*factor;}}
+    else if(format==1){uchar4 codes=*((device const uchar4*)(w+idx));float scale=scale8(scales[idx/32]);for(uint j=0;j<4;j++)v[j]=fp8(codes[j])*scale;}
+    else v=float4(*((device const packed_float4*)(((device const float*)w)+idx)));
+    return v;
+}
+// Same geometry as expert_matvec. Gather grouped inputs, multiply each eight-slot
+// tile by its expert's weights, and scatter back to [token, selected slot, row].
+kernel void expert_matmul(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const uint* groups [[buffer(5)]], device const uint* tiles [[buffer(6)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint row_tiles=(p.u[0]+7)/8,tile=group/row_tiles;if(tile>=tiles[0])return;
+    uint row=(group%row_tiles)*8,expert=tiles[1+2*tile],first=tiles[2+2*tile],stride=p.u[5]+1,count=groups[expert*stride],cols=p.u[1];
+    float factor=p.u[3]==0?factors[expert]:1.f;
+    threadgroup float a[256],b[256],result[64];
+    simdgroup_float8x8 sum=make_filled_simdgroup_matrix<float,8,8>(0.f);
+    for(uint base=0;base<cols;base+=32){
+        for(uint i=lane;i<64;i+=32){uint r=i/8,c=(i%8)*4;float4 av=0,bv=0;
+            if(first+r<count){uint slot=groups[expert*stride+1+first+r],src=(p.u[4]?slot:slot/p.u[2])*cols;
+                if(base+c+4<=cols)av=float4(*((device const packed_float4*)(x+src+base+c)));
+                else for(uint j=0;j<4;j++)if(base+c+j<cols)av[j]=x[src+base+c+j];}
+            if(row+r<p.u[0]){uint idx=(expert*p.u[0]+row+r)*cols+base+c;
+                if(base+c+4<=cols)bv=expert_weight4(w,scales,idx,p.u[3],factor);
+                else if(p.u[3]==2)for(uint j=0;j<4;j++)if(base+c+j<cols)bv[j]=((device const float*)w)[idx+j];}
+            for(uint j=0;j<4;j++){a[r*32+c+j]=av[j];b[(c+j)*8+r]=bv[j];}
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for(uint k=0;k<32;k+=8){simdgroup_float8x8 av,bv;simdgroup_load(av,a+k,32);simdgroup_load(bv,b+k*8,8);simdgroup_multiply_accumulate(sum,av,bv,sum);}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    simdgroup_store(sum,result,8);threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint i=lane;i<64;i+=32){uint t=first+i/8,r=row+i%8;if(t<count && r<p.u[0]){uint slot=groups[expert*stride+1+t];y[slot*p.u[0]+r]=result[i];}}
+}
 // intermediate width, top_k; gate softcap, up softcap. Native w13 rows interleave gate/up.
 kernel void swiglu(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) {
     if(i<p.u[0]*p.u[1]*p.u[2]){float g=x[2*i],u=x[2*i+1];y[i]=p.f[0]*tanh(g/p.f[0])/(1.f+exp(-g))*p.f[1]*tanh(u/p.f[1]);}

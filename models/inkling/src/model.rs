@@ -19,6 +19,12 @@ struct Expert<B> {
     factors: B,
     format: usize,
 }
+
+struct ExpertGroups<B> {
+    slots: B,
+    tiles: B,
+    max_tiles: usize,
+}
 type ExpertPair<B> = (Expert<B>, Expert<B>);
 
 struct Cache<B> {
@@ -532,6 +538,7 @@ impl<A: Accelerator> Inkling<A> {
         down: bool,
         x: &A::Buffer,
         routing: &A::Buffer,
+        groups: Option<&ExpertGroups<A::Buffer>>,
     ) -> Result<A::Buffer> {
         let c = &self.config.text_config;
         let (rows, cols) = if down {
@@ -552,6 +559,17 @@ impl<A: Accelerator> Inkling<A> {
             e.format,
         );
         let y = self.alloc(rows * top * self.batch)?;
+        if let Some(groups) = groups {
+            self.run(
+                "expert_matmul",
+                &[&y, &w, &scales, &factors, x, &groups.slots, &groups.tiles],
+                &[rows, cols, top, format, usize::from(down), self.batch],
+                &[],
+                rows.div_ceil(8) * groups.max_tiles * 32,
+                32,
+            )?;
+            return Ok(y);
+        }
         self.run(
             "expert_matvec",
             &[&y, &w, &scales, &factors, x, routing],
@@ -561,6 +579,37 @@ impl<A: Accelerator> Inkling<A> {
             128,
         )?;
         Ok(y)
+    }
+    fn group_experts(&mut self, routing: &A::Buffer) -> Result<ExpertGroups<A::Buffer>> {
+        let experts = self.config.text_config.n_routed_experts;
+        let top = self.config.text_config.num_experts_per_tok;
+        let count = self.batch * top;
+        // Sum ceil(count_per_expert / 8), bounded by total slots plus at most
+        // seven padding slots for each nonempty expert.
+        let max_tiles = (count + 7 * experts.min(count)) / 8;
+        let slots = self.alloc(experts * (self.batch + 1))?;
+        let tiles = self.alloc(1 + 2 * max_tiles)?;
+        self.run(
+            "expert_groups",
+            &[&slots, routing],
+            &[experts, top, self.batch],
+            &[],
+            experts * 32,
+            32,
+        )?;
+        self.run(
+            "expert_tiles",
+            &[&tiles, &slots],
+            &[experts, self.batch],
+            &[],
+            32,
+            32,
+        )?;
+        Ok(ExpertGroups {
+            slots,
+            tiles,
+            max_tiles,
+        })
     }
     fn moe(&mut self, x: &A::Buffer, layer: usize) -> Result<A::Buffer> {
         let c = self.config.text_config.clone();
@@ -580,7 +629,12 @@ impl<A: Accelerator> Inkling<A> {
             self.batch * 32,
             32,
         )?;
-        let gu = self.expert_projection(layer, false, x, &routing)?;
+        let groups = if self.batch >= 8 {
+            Some(self.group_experts(&routing)?)
+        } else {
+            None
+        };
+        let gu = self.expert_projection(layer, false, x, &routing, groups.as_ref())?;
         let activated = self.alloc(c.intermediate_size * c.num_experts_per_tok * self.batch)?;
         self.run(
             "swiglu",
@@ -590,7 +644,7 @@ impl<A: Accelerator> Inkling<A> {
             c.intermediate_size * c.num_experts_per_tok * self.batch,
             128,
         )?;
-        let down = self.expert_projection(layer, true, &activated, &routing)?;
+        let down = self.expert_projection(layer, true, &activated, &routing, groups.as_ref())?;
         let y = self.alloc(c.hidden_size * self.batch)?;
         self.run(
             "expert_sum",
