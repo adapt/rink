@@ -189,3 +189,84 @@ fn matvec_handles_bfloat16_and_non_aligned_dimensions() {
         .collect();
     close(&read(&mut d, &out), &expected, 0.00001);
 }
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn prefill_and_gpu_sampling_match_scalar_reference_across_reset() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny");
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/tiny/expected.json")).unwrap();
+    let tokens: Vec<u32> = serde_json::from_value(expected["tokens"].clone()).unwrap();
+    let logits: Vec<Vec<f32>> = serde_json::from_value(expected["logits"].clone()).unwrap();
+    let mut model = Inkling::load(Metal::new().unwrap(), &path, tokens.len()).unwrap();
+    assert!(model.prefill(&[]).is_err());
+    assert!(model.prefill(&[tokens[0], 999]).is_err());
+    assert_eq!(model.position(), 0);
+    close(&model.prefill(&tokens[..4]).unwrap(), &logits[3], 0.0002);
+    assert_eq!(model.position(), 4);
+    close(
+        &model.prefill(&tokens[4..]).unwrap(),
+        logits.last().unwrap(),
+        0.0002,
+    );
+    model.reset().unwrap();
+    model.accelerator_mut().reset_stats();
+    assert_eq!(
+        model.prefill_greedy(&tokens[..5]).unwrap(),
+        rink_core::greedy(&logits[4]).unwrap()
+    );
+    assert_eq!(model.accelerator().stats().readback_bytes, 8);
+    for i in 5..tokens.len() {
+        assert_eq!(
+            model.step_greedy(tokens[i]).unwrap(),
+            rink_core::greedy(&logits[i]).unwrap()
+        );
+    }
+    assert!(model.step_greedy(1).is_err());
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn gpu_argmax_handles_ties_tail_and_nonfinite_values() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    let mut values = vec![-5.; 2059];
+    values[1023] = 9.;
+    values[2048] = 9.;
+    values[2058] = 8.;
+    let partial = d.allocate(3 * 12).unwrap();
+    let result = d.allocate(8).unwrap();
+    for invalid in [false, true] {
+        if invalid {
+            values[2058] = f32::NAN;
+        }
+        let x = upload(&mut d, &values);
+        // SAFETY: three 1024-token partitions, 12 bytes per partial and two u32 outputs.
+        unsafe {
+            k.run(
+                &mut d,
+                "argmax_partial",
+                &[&partial, &x],
+                Params::new(&[values.len()], &[]),
+                96,
+                32,
+            )
+            .unwrap();
+            k.run(
+                &mut d,
+                "argmax_finish",
+                &[&result, &partial],
+                Params::new(&[3], &[]),
+                32,
+                32,
+            )
+            .unwrap();
+        }
+        let bytes = d.read(&result).unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 1023);
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..].try_into().unwrap()),
+            u32::from(invalid)
+        );
+    }
+}

@@ -28,6 +28,13 @@ struct Cache<B> {
     capacity: usize,
 }
 
+#[derive(Clone)]
+struct Blocks<B> {
+    buffer: B,
+    count: usize,
+    offset: usize,
+}
+
 /// Single-sequence, streaming text decoder for the original Inkling 2 Mini checkpoint.
 /// Uses float32 activations and accumulation, with native packed expert storage.
 pub struct Inkling<A: Accelerator> {
@@ -215,21 +222,18 @@ impl<A: Accelerator> Inkling<A> {
     }
     fn read_blocks(
         &mut self,
-        blocks: &[A::Buffer],
+        blocks: &Blocks<A::Buffer>,
+        live: &A::Buffer,
         query: &str,
         offset: usize,
     ) -> Result<A::Buffer> {
         let n = self.config.text_config.hidden_size;
-        let stack = self.alloc(blocks.len() * n)?;
-        for (i, b) in blocks.iter().enumerate() {
-            self.copy(&stack, i * n, b, 0, n)?;
-        }
         let q = self.w(query);
         let y = self.alloc(n)?;
         self.run(
             "block_read",
-            &[&y, &stack, &q],
-            &[n, blocks.len(), offset],
+            &[&y, &blocks.buffer, live, &q],
+            &[n, blocks.count + 1, offset, blocks.offset],
             &[],
             32,
             32,
@@ -524,28 +528,43 @@ impl<A: Accelerator> Inkling<A> {
     fn layer(
         &mut self,
         hidden: &A::Buffer,
-        blocks: &mut Vec<A::Buffer>,
-        previous: Option<&[A::Buffer]>,
+        blocks: &mut Blocks<A::Buffer>,
+        previous: Option<&(Blocks<A::Buffer>, A::Buffer)>,
         visit: Visit,
     ) -> Result<A::Buffer> {
         let c = self.config.text_config.clone();
         let h = c.hidden_size;
         let prefix = format!("layers.{}", visit.layer);
         let local = c.is_local(visit.layer);
-        let mut sources = blocks.clone();
-        sources.push(hidden.clone());
-        let mut inputs = Vec::new();
+        let mut inputs: Vec<A::Buffer> = Vec::new();
+        let shared = if visit.layer == 0 {
+            Some(hidden.clone())
+        } else if local {
+            Some(self.read_blocks(
+                blocks,
+                hidden,
+                &format!("attn_res.attn_queries.{}", visit.layer - 1),
+                0,
+            )?)
+        } else {
+            None
+        };
         for input in 0..3 {
-            let x = if visit.layer == 0 {
-                hidden.clone()
+            if input > 0 && local && previous.is_none() {
+                inputs.push(inputs[0].clone());
+                continue;
+            }
+            let x = if let Some(shared) = &shared {
+                shared.clone()
             } else {
                 self.read_blocks(
-                    &sources,
+                    blocks,
+                    hidden,
                     &format!("attn_res.attn_queries.{}", visit.layer - 1),
                     if local { 0 } else { input * h },
                 )?
             };
-            let x = if let Some(previous) = previous {
+            let x = if let Some((previous, previous_live)) = previous {
                 let (bank, index) = match input {
                     0 => ("middle_cycle_cross_pass_queries", 0),
                     1 => ("middle_cycle_cross_pass_kv_queries", 0),
@@ -553,6 +572,7 @@ impl<A: Accelerator> Inkling<A> {
                 };
                 let msg = self.read_blocks(
                     previous,
+                    previous_live,
                     bank,
                     ((visit.layer - c.loop_config.core_start) * 2 + index) * h,
                 )?;
@@ -574,21 +594,22 @@ impl<A: Accelerator> Inkling<A> {
         let attn = self.attention(&inputs, visit)?;
         let attn = self.conv(&attn, None, &format!("{prefix}.attn_sconv"), visit, 2, h)?;
         let residual = if visit.layer % c.n_layers_per_attn_res_block == 0 {
-            blocks.push(hidden.clone());
+            self.copy(&blocks.buffer, blocks.count * h, hidden, 0, h)?;
+            blocks.count += 1;
             attn
         } else {
             self.add(hidden, &attn)?
         };
-        let mut sources = blocks.clone();
-        sources.push(residual.clone());
         let x = self.read_blocks(
-            &sources,
+            blocks,
+            &residual,
             &format!("attn_res.mlp_queries.{}", visit.layer),
             0,
         )?;
-        let x = if let Some(previous) = previous {
+        let x = if let Some((previous, previous_live)) = previous {
             let msg = self.read_blocks(
                 previous,
+                previous_live,
                 "middle_cycle_cross_pass_queries",
                 ((visit.layer - c.loop_config.core_start) * 2 + 1) * h,
             )?;
@@ -601,7 +622,7 @@ impl<A: Accelerator> Inkling<A> {
         let x = self.conv(&x, None, &format!("{prefix}.mlp_sconv"), visit, 3, h)?;
         self.add(&residual, &x)
     }
-    fn forward(&mut self, token: u32) -> Result<Vec<f32>> {
+    fn hidden(&mut self, token: u32) -> Result<A::Buffer> {
         self.scratch_cursor = 0;
         let c = self.config.text_config.clone();
         let embed = self.weights["embed.weight"].clone();
@@ -615,7 +636,13 @@ impl<A: Accelerator> Inkling<A> {
             128,
         )?;
         let mut hidden = self.norm(&hidden, Some("embed_norm.weight"), c.hidden_size, 1)?;
-        let mut blocks = Vec::new();
+        let bank_size =
+            (c.num_hidden_layers.div_ceil(c.n_layers_per_attn_res_block) + 1) * c.hidden_size;
+        let mut blocks = Blocks {
+            buffer: self.alloc(bank_size)?,
+            count: 0,
+            offset: 0,
+        };
         let mut prelude = None;
         let mut previous = None;
         for visit in c.schedule() {
@@ -626,11 +653,28 @@ impl<A: Accelerator> Inkling<A> {
                     let (pre_hidden, pre_blocks) = prelude.as_ref().expect("validated schedule");
                     // Exclude the prelude and the first core boundary. Only completed core
                     // blocks plus the final partial block are messages for the next pass.
-                    let mut messages = blocks[pre_blocks.len() + 1..].to_vec();
-                    messages.push(hidden);
-                    previous = Some(messages);
+                    let offset = pre_blocks.count + 1;
+                    previous = Some((
+                        Blocks {
+                            buffer: blocks.buffer.clone(),
+                            count: blocks.count - offset,
+                            offset,
+                        },
+                        hidden,
+                    ));
                     hidden = pre_hidden.clone();
-                    blocks = pre_blocks.clone();
+                    blocks = Blocks {
+                        buffer: self.alloc(bank_size)?,
+                        count: pre_blocks.count,
+                        offset: 0,
+                    };
+                    self.copy(
+                        &blocks.buffer,
+                        0,
+                        &pre_blocks.buffer,
+                        0,
+                        pre_blocks.count * c.hidden_size,
+                    )?;
                 }
             }
             let in_core =
@@ -638,16 +682,18 @@ impl<A: Accelerator> Inkling<A> {
             hidden = self.layer(
                 &hidden,
                 &mut blocks,
-                if in_core { previous.as_deref() } else { None },
+                if in_core { previous.as_ref() } else { None },
                 visit,
             )?;
         }
-        blocks.push(hidden);
-        let hidden = self.read_blocks(&blocks, "attn_res.output_query", 0)?;
-        let hidden = self.norm(&hidden, Some("norm.weight"), c.hidden_size, 1)?;
+        let hidden = self.read_blocks(&blocks, &hidden, "attn_res.output_query", 0)?;
+        self.norm(&hidden, Some("norm.weight"), c.hidden_size, 1)
+    }
+    fn project(&mut self, hidden: &A::Buffer) -> Result<A::Buffer> {
+        let c = self.config.text_config.clone();
         let logits = self.linear(
             "unembed.weight",
-            &hidden,
+            hidden,
             c.unpadded_vocab_size,
             c.hidden_size,
         )?;
@@ -660,9 +706,13 @@ impl<A: Accelerator> Inkling<A> {
             c.unpadded_vocab_size,
             128,
         )?;
+        Ok(capped)
+    }
+    fn logits(&mut self, hidden: &A::Buffer) -> Result<Vec<f32>> {
+        let capped = self.project(hidden)?;
         let bytes = self
             .device
-            .read_prefix(&capped, c.unpadded_vocab_size * 4)?;
+            .read_prefix(&capped, self.config.text_config.unpadded_vocab_size * 4)?;
         let logits: Vec<_> = bytes
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
@@ -674,6 +724,68 @@ impl<A: Accelerator> Inkling<A> {
         );
         Ok(logits)
     }
+
+    fn select(&mut self, hidden: &A::Buffer) -> Result<u32> {
+        let logits = self.project(hidden)?;
+        let n = self.config.text_config.unpadded_vocab_size;
+        let groups = n.div_ceil(1024);
+        let partial = self.alloc(groups * 3)?;
+        self.run(
+            "argmax_partial",
+            &[&partial, &logits],
+            &[n],
+            &[],
+            groups * 32,
+            32,
+        )?;
+        let result = self.alloc(2)?;
+        self.run(
+            "argmax_finish",
+            &[&result, &partial],
+            &[groups],
+            &[],
+            32,
+            32,
+        )?;
+        let bytes = self.device.read_prefix(&result, 8)?;
+        let token = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+        let invalid = u32::from_le_bytes(bytes[4..].try_into().unwrap());
+        ensure!(
+            invalid == 0,
+            "non-finite logits at position {}",
+            self.position
+        );
+        Ok(token)
+    }
+    fn validate_tokens(&self, tokens: &[u32]) -> Result<()> {
+        ensure!(!self.failed, "session failed; reset before reuse");
+        ensure!(!tokens.is_empty(), "prompt must not be empty");
+        ensure!(
+            tokens.len() <= self.capacity.saturating_sub(self.position),
+            "context capacity {} exhausted",
+            self.capacity
+        );
+        ensure!(
+            tokens
+                .iter()
+                .all(|&t| (t as usize) < self.config.text_config.unpadded_vocab_size),
+            "token outside vocabulary"
+        );
+        Ok(())
+    }
+    fn prefill_hidden(&mut self, tokens: &[u32]) -> Result<A::Buffer> {
+        self.validate_tokens(tokens)?;
+        self.failed = true;
+        let mut hidden = None;
+        for (i, &token) in tokens.iter().enumerate() {
+            hidden = Some(self.hidden(token)?);
+            self.position += 1;
+            if (i + 1) % 32 == 0 && i + 1 < tokens.len() {
+                self.device.synchronize()?;
+            }
+        }
+        Ok(hidden.expect("nonempty prompt"))
+    }
 }
 
 impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
@@ -684,8 +796,8 @@ impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
         self.position
     }
     fn reset(&mut self) -> Result<()> {
-        self.device.synchronize()?;
         self.failed = true;
+        self.device.synchronize()?;
         // Cache reads are bounded by the absolute sequence position. At position
         // zero every visible KV entry and convolution tap is written before use;
         // old allocations can be retained without clearing their contents.
@@ -722,19 +834,32 @@ impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
         Ok(())
     }
     fn step(&mut self, token: u32) -> Result<Vec<f32>> {
-        ensure!(!self.failed, "session failed; reset before reuse");
-        ensure!(
-            self.position < self.capacity,
-            "context capacity {} exhausted",
-            self.capacity
-        );
-        ensure!(
-            (token as usize) < self.config.text_config.unpadded_vocab_size,
-            "token {token} outside vocabulary"
-        );
+        self.validate_tokens(&[token])?;
         self.failed = true;
-        let result = self.forward(token)?;
+        let hidden = self.hidden(token)?;
+        let result = self.logits(&hidden)?;
         self.position += 1;
+        self.failed = false;
+        Ok(result)
+    }
+    fn step_greedy(&mut self, token: u32) -> Result<u32> {
+        self.validate_tokens(&[token])?;
+        self.failed = true;
+        let hidden = self.hidden(token)?;
+        let result = self.select(&hidden)?;
+        self.position += 1;
+        self.failed = false;
+        Ok(result)
+    }
+    fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
+        let hidden = self.prefill_hidden(tokens)?;
+        let result = self.logits(&hidden)?;
+        self.failed = false;
+        Ok(result)
+    }
+    fn prefill_greedy(&mut self, tokens: &[u32]) -> Result<u32> {
+        let hidden = self.prefill_hidden(tokens)?;
+        let result = self.select(&hidden)?;
         self.failed = false;
         Ok(result)
     }

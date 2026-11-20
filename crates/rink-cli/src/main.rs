@@ -236,12 +236,7 @@ fn generate(
     let mut model = rink_inkling::Inkling::load(device, &directory, context)?;
     eprintln!("Prefilling {} tokens", tokens.len());
     let start = Instant::now();
-    let mut logits = Vec::new();
-    for (i, &token) in tokens.iter().enumerate() {
-        logits = model
-            .step(token)
-            .with_context(|| format!("prefill token {i}"))?;
-    }
+    let mut next = model.prefill_greedy(tokens).context("prefilling prompt")?;
     eprintln!(
         "Prefill: {:.2}s; generating greedily",
         start.elapsed().as_secs_f64()
@@ -252,7 +247,6 @@ fn generate(
     let mut output = std::io::stdout().lock();
     let mut generated = 0;
     for i in 0..max_tokens {
-        let next = rink_core::greedy(&logits)?;
         if next == model.config().eos_token_id {
             break;
         }
@@ -265,7 +259,7 @@ fn generate(
         }
         generated += 1;
         if i + 1 < max_tokens {
-            logits = model.step(next)?;
+            next = model.step_greedy(next)?;
         }
     }
     writeln!(output)?;

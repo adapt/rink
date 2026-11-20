@@ -43,16 +43,17 @@ kernel void clip(device float* y [[buffer(0)]], device const float* x [[buffer(1
 }
 kernel void add(device float* y [[buffer(0)]], device const float* a [[buffer(1)]], device const float* b [[buffer(2)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) { if(i<p.u[0]) y[i]=a[i]+b[i]; }
 // width, blocks (<=32), query offset. One SIMD group, normalized values and keys.
-kernel void block_read(device float* y [[buffer(0)]], device const float* blocks [[buffer(1)]], device const float* query [[buffer(2)]], constant Params& p [[buffer(15)]], uint lane [[thread_index_in_simdgroup]]) {
+kernel void block_read(device float* y [[buffer(0)]], device const float* blocks [[buffer(1)]], device const float* live [[buffer(2)]], device const float* query [[buffer(3)]], constant Params& p [[buffer(15)]], uint lane [[thread_index_in_simdgroup]]) {
     float r[32],score[32],mx=-INFINITY,den=0; uint n=p.u[0], b=p.u[1];
     for(uint j=0;j<b;j++) {
         float ss=0,dot=0;
-        for(uint i=lane;i<n;i+=32) { float v=blocks[j*n+i]; ss+=v*v; dot+=v*query[p.u[2]+i]; }
+        device const float* block = j+1==b ? live : blocks+(j+p.u[3])*n;
+        for(uint i=lane;i<n;i+=32) { float v=block[i]; ss+=v*v; dot+=v*query[p.u[2]+i]; }
         r[j]=rsqrt(simd_sum(ss)/float(n)+1.e-6f);
         score[j]=simd_sum(dot)*r[j]*rsqrt(float(n)); mx=max(mx,score[j]);
     }
     for(uint j=0;j<b;j++){score[j]=exp(score[j]-mx); den+=score[j];}
-    for(uint i=lane;i<n;i+=32){float v=0;for(uint j=0;j<b;j++) v+=blocks[j*n+i]*r[j]*score[j]/den; y[i]=v;}
+    for(uint i=lane;i<n;i+=32){float v=0;for(uint j=0;j<b;j++){device const float* block=j+1==b?live:blocks+(j+p.u[3])*n;v+=block[i]*r[j]*score[j]/den;}y[i]=v;}
 }
 // Concatenated unweighted RMS-normalized controller inputs. width; epsilon.
 kernel void concat_norm(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* msg [[buffer(2)]], constant Params& p [[buffer(15)]], uint lane [[thread_index_in_simdgroup]]) {
@@ -122,3 +123,17 @@ kernel void expert_sum(device float* y [[buffer(0)]], device const float* x [[bu
     if(i<p.u[0]){float v=0;for(uint j=0;j<p.u[1];j++)v+=x[j*p.u[0]+i]*routing[2*j+1];y[i]=v;}
 }
 kernel void softcap(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) { if(i<p.u[0]) y[i]=p.f[0]*tanh(x[i]/p.f[0]); }
+
+struct Choice { float value; uint index; uint invalid; };
+kernel void argmax_partial(device Choice* y [[buffer(0)]], device const float* x [[buffer(1)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint group=t/32, best=0xffffffff; float value=-INFINITY; bool bad=false;
+    for(uint i=group*1024+lane;i<min((group+1)*1024,p.u[0]);i+=32){float v=x[i];bad|=!isfinite(v);if(v>value || (v==value && i<best)){value=v;best=i;}}
+    float maximum=simd_max(value);uint index=simd_min(value==maximum?best:0xffffffff);bool invalid=simd_any(bad);
+    if(lane==0)y[group]={maximum,index,uint(invalid)};
+}
+kernel void argmax_finish(device uint* y [[buffer(0)]], device const Choice* x [[buffer(1)]], constant Params& p [[buffer(15)]], uint lane [[thread_index_in_simdgroup]]) {
+    uint best=0xffffffff;float value=-INFINITY;bool bad=false;
+    for(uint i=lane;i<p.u[0];i+=32){Choice v=x[i];bad|=v.invalid!=0;if(v.value>value || (v.value==value && v.index<best)){value=v.value;best=v.index;}}
+    float maximum=simd_max(value);uint index=simd_min(value==maximum?best:0xffffffff);bool invalid=simd_any(bad);
+    if(lane==0){y[0]=index;y[1]=uint(invalid);}
+}

@@ -53,6 +53,8 @@ impl<A: Accelerator> Kernels<A> {
             "swiglu",
             "expert_sum",
             "softcap",
+            "argmax_partial",
+            "argmax_finish",
         ] {
             entries.insert(name, device.compile(&SOURCE, name)?);
         }

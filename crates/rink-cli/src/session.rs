@@ -5,7 +5,7 @@ use rink_core::AutoregressiveModel;
 
 enum State {
     Ready,
-    Generating(Vec<f32>),
+    Generating(u32),
     Failed,
 }
 
@@ -59,11 +59,7 @@ impl<M: AutoregressiveModel> Session<M> {
     pub fn start(&mut self, tokens: &[u32], max_tokens: usize) -> Result<()> {
         self.check_prompt(tokens, max_tokens)?;
         self.state = State::Failed;
-        let mut logits = Vec::new();
-        for &token in tokens {
-            logits = self.model.step(token)?;
-        }
-        self.state = State::Generating(logits);
+        self.state = State::Generating(self.model.prefill_greedy(tokens)?);
         Ok(())
     }
 
@@ -84,18 +80,16 @@ impl<M: AutoregressiveModel> Session<M> {
 
     /// `None` means EOS. A token limit leaves logits intact for /continue.
     pub fn next_token(&mut self) -> Result<Option<u32>> {
-        let State::Generating(logits) = &self.state else {
+        let State::Generating(token) = self.state else {
             anyhow::bail!("no active reply; a failed session must be reset");
         };
-        let next = rink_core::greedy(logits);
         self.state = State::Failed;
-        let token = next?;
-        let logits = self.model.step(token)?;
+        let next = self.model.step_greedy(token)?;
         if token == self.eos {
             self.state = State::Ready;
             Ok(None)
         } else {
-            self.state = State::Generating(logits);
+            self.state = State::Generating(next);
             Ok(Some(token))
         }
     }
