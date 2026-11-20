@@ -175,20 +175,26 @@ fn parallel_routing_keeps_nonfinite_candidates_in_bounds() {
 
 #[test]
 #[ignore = "requires a Metal GPU"]
-fn grouped_experts_match_native_vectors_with_sparse_routes_and_partial_tiles() {
+fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles() {
     let mut d = Metal::new().unwrap();
     let k = Kernels::compile(&mut d).unwrap();
     let experts = 37usize;
-    let rows = 11usize;
     let top = 3usize;
-    for (format, cols) in [
-        (0usize, 16usize),
-        (0usize, 32usize),
-        (0, 160),
-        (1, 32),
-        (1, 160),
-        (2, 17),
-        (2, 160),
+    for (format, cols, rows) in [
+        (0usize, 16usize, 11usize),
+        (0, 32, 11),
+        (0, 160, 11),
+        (1, 32, 11),
+        (1, 160, 11),
+        (2, 17, 11),
+        (2, 160, 11),
+        (0, 16, 2),
+        (0, 32, 14),
+        (0, 160, 22),
+        (1, 32, 14),
+        (1, 160, 22),
+        (2, 17, 22),
+        (2, 160, 14),
     ] {
         let count = experts * rows * cols;
         let weights = match format {
@@ -225,7 +231,7 @@ fn grouped_experts_match_native_vectors_with_sparse_routes_and_partial_tiles() {
                 .map(|i| (i % 7 + 1) as f32 / 8.)
                 .collect::<Vec<_>>(),
         );
-        for batch in [2usize, 8, 17, 32, 33] {
+        for batch in [1usize, 2, 8, 17, 32, 33] {
             for sparse in [false, true] {
                 let routes: Vec<_> = (0..batch * top)
                     .flat_map(|slot| {
@@ -327,6 +333,75 @@ fn grouped_experts_match_native_vectors_with_sparse_routes_and_partial_tiles() {
                         .unwrap();
                     }
                     close(&read(&mut d, &new), &read(&mut d, &old), 0.0002);
+                    if rows % 2 == 0 && down == 0 {
+                        let width = rows / 2;
+                        let caps = [1.7, 2.3];
+                        let expected_vector = d.allocate(slots * width * 4).unwrap();
+                        let expected_matrix = d.allocate(slots * width * 4).unwrap();
+                        let fused_vector = upload(&mut d, &vec![f32::NAN; slots * width]);
+                        let fused_matrix = upload(&mut d, &vec![f32::NAN; slots * width]);
+                        let activated = Params::new(&[width, top, batch], &caps);
+                        let fused = Params::new(&[rows, cols, top, format, 0, batch], &caps);
+                        // SAFETY: paired gate/up rows are even, including the
+                        // partial final matrix tile. Both fused outputs have
+                        // half the row count and retain original routing slots.
+                        unsafe {
+                            k.run(
+                                &mut d,
+                                "swiglu",
+                                &[&expected_vector, &old],
+                                activated,
+                                slots * width,
+                                128,
+                            )
+                            .unwrap();
+                            k.run(
+                                &mut d,
+                                "swiglu",
+                                &[&expected_matrix, &new],
+                                activated,
+                                slots * width,
+                                128,
+                            )
+                            .unwrap();
+                            k.run(
+                                &mut d,
+                                "expert_swiglu_matvec",
+                                &[&fused_vector, &weights, &scales, &factors, &input, &routing],
+                                fused,
+                                slots * width * 32,
+                                128,
+                            )
+                            .unwrap();
+                            k.run(
+                                &mut d,
+                                "expert_swiglu_matmul",
+                                &[
+                                    &fused_matrix,
+                                    &weights,
+                                    &scales,
+                                    &factors,
+                                    &input,
+                                    &groups,
+                                    &tiles,
+                                ],
+                                fused,
+                                rows.div_ceil(8) * max_tiles * 32,
+                                32,
+                            )
+                            .unwrap();
+                        }
+                        close(
+                            &read(&mut d, &fused_vector),
+                            &read(&mut d, &expected_vector),
+                            0.000003,
+                        );
+                        close(
+                            &read(&mut d, &fused_matrix),
+                            &read(&mut d, &expected_matrix),
+                            0.000003,
+                        );
+                    }
                 }
             }
         }

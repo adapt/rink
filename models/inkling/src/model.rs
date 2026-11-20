@@ -595,24 +595,34 @@ impl<A: Accelerator> Inkling<A> {
             e.factors.clone(),
             e.format,
         );
-        let y = self.alloc(rows * top * self.batch)?;
+        let output_rows = if down { rows } else { rows / 2 };
+        let caps = [c.mlp_gate_softcap, c.mlp_up_softcap];
+        let y = self.alloc(output_rows * top * self.batch)?;
         if let Some(groups) = groups {
             self.run(
-                "expert_matmul",
+                if down {
+                    "expert_matmul"
+                } else {
+                    "expert_swiglu_matmul"
+                },
                 &[&y, &w, &scales, &factors, x, &groups.slots, &groups.tiles],
                 &[rows, cols, top, format, usize::from(down), self.batch],
-                &[],
+                &caps,
                 rows.div_ceil(8) * groups.max_tiles * 32,
                 32,
             )?;
             return Ok(y);
         }
         self.run(
-            "expert_matvec",
+            if down {
+                "expert_matvec"
+            } else {
+                "expert_swiglu_matvec"
+            },
             &[&y, &w, &scales, &factors, x, routing],
             &[rows, cols, top, format, usize::from(down), self.batch],
-            &[],
-            rows * top * self.batch * 32,
+            &caps,
+            output_rows * top * self.batch * 32,
             128,
         )?;
         Ok(y)
@@ -672,16 +682,7 @@ impl<A: Accelerator> Inkling<A> {
         } else {
             None
         };
-        let gu = self.expert_projection(layer, false, x, &routing, groups.as_ref())?;
-        let activated = self.alloc(c.intermediate_size * c.num_experts_per_tok * self.batch)?;
-        self.run(
-            "swiglu",
-            &[&activated, &gu],
-            &[c.intermediate_size, c.num_experts_per_tok, self.batch],
-            &[c.mlp_gate_softcap, c.mlp_up_softcap],
-            c.intermediate_size * c.num_experts_per_tok * self.batch,
-            128,
-        )?;
+        let activated = self.expert_projection(layer, false, x, &routing, groups.as_ref())?;
         let down = self.expert_projection(layer, true, &activated, &routing, groups.as_ref())?;
         self.residual_conv(&down, Some(&routing), Some(residual), visit)
     }
