@@ -16,3 +16,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 rink-metal.workspace = true
+tokenizers.workspace = true
