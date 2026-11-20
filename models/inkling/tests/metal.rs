@@ -26,6 +26,112 @@ fn close(a: &[f32], b: &[f32], tol: f32) {
     }
 }
 
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn parallel_routing_preserves_ties_bias_and_mixture_weights() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    for n in [1usize, 3, 31, 32, 33, 128, 256] {
+        for top in [n.min(8), n.min(32)] {
+            let scores: Vec<_> = (0..3 * n)
+                .map(|i| {
+                    if i < n {
+                        0.
+                    } else {
+                        ((i * 17 % 31) as f32 - 15.) * 10.
+                    }
+                })
+                .collect();
+            let bias: Vec<_> = (0..n).map(|i| (i % 3) as f32 - 1.).collect();
+            let logits = upload(&mut d, &scores);
+            let bias = upload(&mut d, &bias);
+            let old = d.allocate(3 * top * 8).unwrap();
+            let new = d.allocate(3 * top * 8).unwrap();
+            let p = Params::new(&[n, top, 3], &[8.]);
+            // SAFETY: three rows of n scores, n biases, and top output pairs per token.
+            unsafe {
+                k.run(&mut d, "route", &[&old, &logits, &bias], p, 3, 32)
+                    .unwrap();
+                k.run(
+                    &mut d,
+                    "route_parallel",
+                    &[&new, &logits, &bias],
+                    p,
+                    3 * 32,
+                    32,
+                )
+                .unwrap();
+            }
+            let old = read(&mut d, &old);
+            let new = read(&mut d, &new);
+            for (a, b) in old.chunks_exact(2).zip(new.chunks_exact(2)) {
+                assert_eq!(a[0], b[0], "expert identity or tie order changed");
+            }
+            close(&new, &old, 0.000001);
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn wide_normalization_matches_reference_with_zero_rows_and_tails() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    for width in [1usize, 17, 128, 513, 2304, 8192] {
+        let x: Vec<_> = (0..3 * width)
+            .map(|i| {
+                if i < width {
+                    0.
+                } else {
+                    ((i * 13 % 101) as f32 - 50.) / 7.
+                }
+            })
+            .collect();
+        let weights: Vec<_> = (0..width).map(|i| 0.5 + (i % 7) as f32 / 10.).collect();
+        let input = upload(&mut d, &x);
+        let weights = upload(&mut d, &weights);
+        for weighted in [0, 1] {
+            let old = d.allocate(3 * width * 4).unwrap();
+            let new = d.allocate(3 * width * 4).unwrap();
+            let p = Params::new(&[width, 3, weighted], &[1.0e-6]);
+            // SAFETY: three width-element rows, width weights, and matching outputs.
+            unsafe {
+                k.run(&mut d, "rms", &[&old, &input, &weights], p, 3 * 32, 32)
+                    .unwrap();
+                k.run(
+                    &mut d,
+                    "rms_parallel",
+                    &[&new, &input, &weights],
+                    p,
+                    3 * 256,
+                    256,
+                )
+                .unwrap();
+            }
+            close(&read(&mut d, &new), &read(&mut d, &old), 0.00001);
+        }
+        let msg = upload(&mut d, &x.iter().map(|v| v * 0.3 + 1.).collect::<Vec<_>>());
+        let old = d.allocate(6 * width * 4).unwrap();
+        let new = d.allocate(6 * width * 4).unwrap();
+        let p = Params::new(&[width, 3], &[1.0e-6]);
+        // SAFETY: three width-element rows in each input, concatenated output rows.
+        unsafe {
+            k.run(&mut d, "concat_norm", &[&old, &input, &msg], p, 3 * 32, 32)
+                .unwrap();
+            k.run(
+                &mut d,
+                "concat_norm_parallel",
+                &[&new, &input, &msg],
+                p,
+                3 * 256,
+                256,
+            )
+            .unwrap();
+        }
+        close(&read(&mut d, &new), &read(&mut d, &old), 0.00001);
+    }
+}
+
 // These tests are explicit hardware tests, never silently passed when no GPU exists.
 #[test]
 #[ignore = "requires a Metal GPU"]

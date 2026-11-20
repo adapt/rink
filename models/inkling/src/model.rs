@@ -233,13 +233,14 @@ impl<A: Accelerator> Inkling<A> {
         let w = name.map(|n| self.w(n)).unwrap_or_else(|| x.clone());
         let rows = rows * self.batch;
         let y = self.alloc(width * rows)?;
+        let group = if width >= 512 { 256 } else { 32 };
         self.run(
-            "rms",
+            if group == 256 { "rms_parallel" } else { "rms" },
             &[&y, x, &w],
             &[width, rows, usize::from(name.is_some())],
             &[self.config.text_config.rms_norm_eps],
-            rows * 32,
-            32,
+            rows * group,
+            group,
         )?;
         Ok(y)
     }
@@ -273,13 +274,18 @@ impl<A: Accelerator> Inkling<A> {
         let h = self.config.text_config.hidden_size;
         let rank = self.config.text_config.loop_config.gate_rank;
         let cat = self.alloc(2 * h * self.batch)?;
+        let group = if h >= 512 { 256 } else { 32 };
         self.run(
-            "concat_norm",
+            if group == 256 {
+                "concat_norm_parallel"
+            } else {
+                "concat_norm"
+            },
             &[&cat, x, msg],
             &[h, self.batch],
             &[self.config.text_config.rms_norm_eps],
-            self.batch * 32,
-            32,
+            self.batch * group,
+            group,
         )?;
         let low = self.linear(&format!("{prefix}.down_weight"), &cat, rank, 2 * h)?;
         let forget = self.linear(&format!("{prefix}.forget_weight"), &low, h, rank)?;
@@ -542,11 +548,11 @@ impl<A: Accelerator> Inkling<A> {
         let bias = self.w(&format!("layers.{layer}.mlp.gate.bias"));
         let routing = self.alloc(2 * c.num_experts_per_tok * self.batch)?;
         self.run(
-            "route",
+            "route_parallel",
             &[&routing, &logits, &bias],
             &[c.n_routed_experts, c.num_experts_per_tok, self.batch],
             &[c.route_scale],
-            self.batch,
+            self.batch * 32,
             32,
         )?;
         let gu = self.expert_projection(layer, false, x, &routing)?;

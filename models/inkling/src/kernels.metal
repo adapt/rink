@@ -69,6 +69,15 @@ kernel void rms(device float* y [[buffer(0)]], device const float* x [[buffer(1)
     float r=rsqrt(simd_sum(s)/float(n)+p.f[0]);
     for(uint i=lane;i<n;i+=32) y[row*n+i]=x[row*n+i]*r*(p.u[2]?w[i]:1.f);
 }
+// Same ABI as rms; one 256-thread group per wide row.
+kernel void rms_parallel(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* w [[buffer(2)]], constant Params& p [[buffer(15)]], uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float partial[8];uint n=p.u[0];if(row>=p.u[1])return;
+    float s=0;for(uint i=tid;i<n;i+=256){float v=x[row*n+i];s+=v*v;}
+    s=simd_sum(s);if(lane==0)partial[tid/32]=s;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float r=rsqrt(simd_sum(lane<8?partial[lane]:0.f)/float(n)+p.f[0]);
+    for(uint i=tid;i<n;i+=256)y[row*n+i]=x[row*n+i]*r*(p.u[2]?w[i]:1.f);
+}
 // head_dim, heads, learned_scale; threshold, log-scale multiplier
 kernel void clip(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* scale [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint row=t/32,n=p.u[0]; if(row>=p.u[1]*p.u[3]) return;uint h=row%p.u[1],token=row/p.u[1];
@@ -120,6 +129,15 @@ kernel void concat_norm(device float* y [[buffer(0)]], device const float* x [[b
 kernel void controller(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* msg [[buffer(2)]], device const float* forget [[buffer(3)]], device const float* gain [[buffer(4)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) {
     if(i<p.u[0]) y[i]=(1.f-tanh(forget[i]))*x[i]+tanh(gain[i])*msg[i];
 }
+// Same ABI as concat_norm, with 256 threads per token for wide controller inputs.
+kernel void concat_norm_parallel(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* msg [[buffer(2)]], constant Params& p [[buffer(15)]], uint token [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float pa[8],pb[8];uint n=p.u[0];if(token>=p.u[1])return;x+=token*n;msg+=token*n;y+=token*n*2;
+    float a=0,b=0;for(uint i=tid;i<n;i+=256){a+=x[i]*x[i];b+=msg[i]*msg[i];}
+    a=simd_sum(a);b=simd_sum(b);if(lane==0){pa[tid/32]=a;pb[tid/32]=b;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    a=rsqrt(simd_sum(lane<8?pa[lane]:0.f)/float(n)+p.f[0]);b=rsqrt(simd_sum(lane<8?pb[lane]:0.f)/float(n)+p.f[0]);
+    for(uint i=tid;i<n;i+=256){y[i]=x[i]*a;y[n+i]=msg[i]*b;}
+}
 // channels, taps, absolute position, dynamic, head_dim. State is [tap,channel].
 kernel void convolution(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* w [[buffer(2)]], device float* state [[buffer(3)]], device const float* dyn [[buffer(4)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) {
     uint c=p.u[0],k=p.u[1];if(i>=c)return;
@@ -162,6 +180,22 @@ kernel void route(device float* y [[buffer(0)]], device const float* logits [[bu
     for(uint i=0;i<p.u[0];i++){s[i]=1.f/(1.f+exp(-logits[i]));rank[i]=s[i]+bias[i];}
     for(uint j=0;j<p.u[1];j++){uint best=0;for(uint i=1;i<p.u[0];i++)if(rank[i]>rank[best])best=i; y[2*j]=float(best);y[2*j+1]=s[best];den+=s[best];rank[best]=-INFINITY;}
     for(uint j=0;j<p.u[1];j++)y[2*j+1]*=p.f[0]/(den+1.e-20f);
+}
+// Same routing ABI, one SIMD group per token. Stable lowest-index tie breaking;
+// selection includes bias, while mixture weights use the unbiased sigmoid score.
+kernel void route_parallel(device float* y [[buffer(0)]], device const float* logits [[buffer(1)]], device const float* bias [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint token=t/32;if(token>=p.u[2])return;logits+=token*p.u[0];y+=token*p.u[1]*2;
+    float scores[8],ranks[8],den=0,chosen=0;
+    for(uint j=0;j<8;j++){uint i=lane+32*j;scores[j]=i<p.u[0]?1.f/(1.f+exp(-logits[i])):0.f;ranks[j]=i<p.u[0]?scores[j]+bias[i]:-INFINITY;}
+    for(uint j=0;j<p.u[1];j++){
+        float best=-INFINITY;uint index=0xffffffff;
+        for(uint k=0;k<8;k++){uint i=lane+32*k;if(i<p.u[0] && (ranks[k]>best || (ranks[k]==best && i<index))){best=ranks[k];index=i;}}
+        float maximum=simd_max(best);index=simd_min(best==maximum?index:0xffffffff);
+        float score=simd_sum(lane==index%32?scores[index/32]:0.f);den+=score;
+        if(lane==0)y[2*j]=float(index);if(lane==j)chosen=score;
+        if(lane==index%32)ranks[index/32]=-INFINITY;
+    }
+    if(lane<p.u[1])y[2*lane+1]=chosen*(p.f[0]/(den+1.e-20f));
 }
 // rows, cols, top_k, format (0 NVFP4, 1 MXFP8, 2 F32), per-expert-input.
 kernel void expert_matvec(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const float* routing [[buffer(5)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
