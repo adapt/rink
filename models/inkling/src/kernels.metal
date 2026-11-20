@@ -291,21 +291,17 @@ float expert_activation(float gate, float up, float gate_cap, float up_cap) {
     return gate_cap*tanh(gate/gate_cap)/(1.f+exp(-gate))*up_cap*tanh(up/up_cap);
 }
 // Same buffers as expert_matvec, with even rows of interleaved gate/up weights.
-// Each SIMD group owns four gate/up pairs, reusing the input loads across all
-// eight rows. Four lanes apply the activation after the row reductions.
+// Each SIMD group owns both rows of a pair and writes one activated output.
 // Input is shared per token; output is [token, top_k, rows/2]. Floats: softcaps.
 kernel void expert_swiglu_matvec(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const float* routing [[buffer(5)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
-    uint width=p.u[0]/2,tiles=(width+3)/4,tile=t/32,slot=tile/tiles,first=(tile%tiles)*4,token=slot/p.u[2];if(token>=p.u[5])return;
-    uint expert=uint(routing[2*slot]),cols=p.u[1];float4 gates=0,ups=0;x+=token*cols;
+    uint width=p.u[0]/2,out=t/32,slot=out/width,row=(out%width)*2,token=slot/p.u[2];if(token>=p.u[5])return;
+    uint expert=uint(routing[2*slot]),cols=p.u[1],base=(expert*p.u[0]+row)*cols;float2 sum=0;x+=token*cols;
     if(p.u[3]<2){float factor=p.u[3]==0?factors[expert]:1.f;
         for(uint c=lane*4;c<cols;c+=128){float4 input=*((device const float4*)(x+c));
-            for(uint r=0;r<4 && first+r<width;r++){uint base=(expert*p.u[0]+2*(first+r))*cols+c;
-                gates[r]+=dot(expert_weight4(w,scales,base,p.u[3],factor),input);
-                ups[r]+=dot(expert_weight4(w,scales,base+cols,p.u[3],factor),input);}}
-    }else{for(uint c=lane;c<cols;c+=32){float input=x[c];for(uint r=0;r<4 && first+r<width;r++){uint base=(expert*p.u[0]+2*(first+r))*cols+c;
-        gates[r]+=((device const float*)w)[base]*input;ups[r]+=((device const float*)w)[base+cols]*input;}}}
-    float gate=0,up=0;for(uint r=0;r<4;r++){float g=simd_sum(gates[r]),u=simd_sum(ups[r]);if(lane==r){gate=g;up=u;}}
-    if(lane<4 && first+lane<width)y[slot*width+first+lane]=expert_activation(gate,up,p.f[0],p.f[1]);
+            sum.x+=dot(expert_weight4(w,scales,base+c,p.u[3],factor),input);
+            sum.y+=dot(expert_weight4(w,scales,base+cols+c,p.u[3],factor),input);}
+    }else{for(uint c=lane;c<cols;c+=32){sum.x+=((device const float*)w)[base+c]*x[c];sum.y+=((device const float*)w)[base+cols+c]*x[c];}}
+    float gate=simd_sum(sum.x),up=simd_sum(sum.y);if(lane==0)y[out]=expert_activation(gate,up,p.f[0],p.f[1]);
 }
 // Same geometry as expert_matvec. Gather grouped inputs, multiply each eight-slot
 // tile by its expert's weights, and scatter back to [token, selected slot, row].
