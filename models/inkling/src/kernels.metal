@@ -92,6 +92,23 @@ kernel void block_read(device float* y [[buffer(0)]], device const float* blocks
     for(uint j=0;j<b;j++){score[j]=exp(score[j]-mx); den+=score[j];}
     for(uint i=lane;i<n;i+=32){float v=0;for(uint j=0;j<b;j++){device const float* block=j+1==b?live:blocks+(j+p.u[3])*n*p.u[4];v+=block[i]*r[j]*score[j]/den;}y[i]=v;}
 }
+// Same ABI and arithmetic as block_read. Eight SIMD groups divide the block
+// reductions; all 256 threads share the weighted output across hidden channels.
+kernel void block_read_parallel(device float* y [[buffer(0)]], device const float* blocks [[buffer(1)]], device const float* live [[buffer(2)]], device const float* query [[buffer(3)]], constant Params& p [[buffer(15)]], uint token [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float r[32],score[32],den;
+    uint n=p.u[0],b=p.u[1],sg=tid/32;
+    if(token>=p.u[4])return;y+=token*n;live+=token*n;blocks+=token*n;
+    for(uint j=sg;j<b;j+=8){
+        device const float* block=j+1==b?live:blocks+(j+p.u[3])*n*p.u[4];
+        float ss=0,dot=0;for(uint i=lane;i<n;i+=32){float v=block[i];ss+=v*v;dot+=v*query[p.u[2]+i];}
+        float norm=rsqrt(simd_sum(ss)/float(n)+1.e-6f),s=simd_sum(dot)*norm*rsqrt(float(n));
+        if(lane==0){r[j]=norm;score[j]=s;}
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid==0){float mx=-INFINITY,total=0;for(uint j=0;j<b;j++)mx=max(mx,score[j]);for(uint j=0;j<b;j++){score[j]=exp(score[j]-mx);total+=score[j];}den=total;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint i=tid;i<n;i+=256){float v=0;for(uint j=0;j<b;j++){device const float* block=j+1==b?live:blocks+(j+p.u[3])*n*p.u[4];v+=block[i]*r[j]*score[j]/den;}y[i]=v;}
+}
 // Concatenated unweighted RMS-normalized controller inputs. width; epsilon.
 kernel void concat_norm(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* msg [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint n=p.u[0];float a=0,b=0;

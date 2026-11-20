@@ -48,6 +48,7 @@ impl<A: Accelerator> Kernels<A> {
             "clip",
             "add",
             "block_read",
+            "block_read_parallel",
             "concat_norm",
             "controller",
             "convolution",

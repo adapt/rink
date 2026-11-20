@@ -28,6 +28,57 @@ fn close(a: &[f32], b: &[f32], tol: f32) {
 
 // These tests are explicit hardware tests, never silently passed when no GPU exists.
 #[test]
+#[ignore = "requires a Metal GPU"]
+fn parallel_residual_reads_match_single_simd_with_offsets_and_tails() {
+    let mut device = Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut device).unwrap();
+    for width in [17, 2304] {
+        for batch in [1, 3] {
+            for blocks in [1, 2, 7, 32] {
+                let values: Vec<_> = (0..(blocks + 3) * batch * width)
+                    .map(|i| ((i * 17 % 211) as f32 - 105.) / 33.)
+                    .collect();
+                let bank = upload(&mut device, &values);
+                let live = upload(&mut device, &values[..batch * width]);
+                let query = upload(&mut device, &values[..2 * width]);
+                let expected = device.allocate(batch * width * 4).unwrap();
+                let actual = device.allocate(batch * width * 4).unwrap();
+                let params = Params::new(&[width, blocks, width, 3, batch], &[]);
+                // SAFETY: block bank includes a three-block offset and all saved
+                // blocks; the live state and query cover their requested rows.
+                unsafe {
+                    kernels
+                        .run(
+                            &mut device,
+                            "block_read",
+                            &[&expected, &bank, &live, &query],
+                            params,
+                            batch * 32,
+                            32,
+                        )
+                        .unwrap();
+                    kernels
+                        .run(
+                            &mut device,
+                            "block_read_parallel",
+                            &[&actual, &bank, &live, &query],
+                            params,
+                            batch * 256,
+                            256,
+                        )
+                        .unwrap();
+                }
+                close(
+                    &read(&mut device, &actual),
+                    &read(&mut device, &expected),
+                    0.000001,
+                );
+            }
+        }
+    }
+}
+
+#[test]
 #[ignore = "requires a Metal GPU; run cargo test --workspace -- --include-ignored"]
 fn tiny_decoder_matches_scalar_reference_and_reset() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny");

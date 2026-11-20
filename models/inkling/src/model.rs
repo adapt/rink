@@ -260,12 +260,12 @@ impl<A: Accelerator> Inkling<A> {
         let q = self.w(query);
         let y = self.alloc(n * self.batch)?;
         self.run(
-            "block_read",
+            "block_read_parallel",
             &[&y, &blocks.buffer, live, &q],
             &[n, blocks.count + 1, offset, blocks.offset, self.batch],
             &[],
-            self.batch * 32,
-            32,
+            self.batch * 256,
+            256,
         )?;
         Ok(y)
     }
