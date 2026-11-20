@@ -40,6 +40,10 @@ fn ordered_dispatch_keeps_resources_alive_and_synchronizes_reads() {
     drop(input);
     drop(intermediate); // Command buffer must retain both resources.
     assert_eq!(device.read(&output).unwrap(), 43u32.to_le_bytes());
+    assert_eq!(device.stats().encoders, 1);
+    assert_eq!(device.stats().command_buffers, 1);
+    assert_eq!(device.read_prefix(&output, 2).unwrap(), [43, 0]);
+    assert!(device.read_prefix(&output, 5).is_err());
     let mut other = Metal::new().unwrap();
     assert!(other.read(&output).is_err());
     assert!(device.allocate(0).is_err());

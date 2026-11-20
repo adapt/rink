@@ -23,6 +23,8 @@ pub struct KernelSource<'a> {
 
 pub enum Argument<'a, B> {
     Buffer(&'a B),
+    /// Leave an unused argument slot untouched.
+    Skip,
     Bytes(&'a [u8]),
 }
 
@@ -55,6 +57,13 @@ pub unsafe trait Accelerator {
     fn synchronize(&mut self) -> Result<()>;
     /// Synchronizes pending work before copying the entire buffer to host memory.
     fn read(&mut self, buffer: &Self::Buffer) -> Result<Vec<u8>>;
+    /// Read only a logical prefix of a reusable allocation.
+    fn read_prefix(&mut self, buffer: &Self::Buffer, bytes: usize) -> Result<Vec<u8>> {
+        ensure!(bytes <= buffer.byte_len(), "read exceeds buffer size");
+        let mut data = self.read(buffer)?;
+        data.truncate(bytes);
+        Ok(data)
+    }
 }
 
 /// One sequence per session. A failed step must be followed by reset before reuse.

@@ -4,7 +4,7 @@ use crate::{
     kernels::{Kernels, Params},
 };
 use anyhow::{Context, Result, bail, ensure};
-use rink_core::{Accelerator, AutoregressiveModel};
+use rink_core::{Accelerator, AutoregressiveModel, Buffer};
 use safetensors::Dtype;
 use std::{collections::HashMap, path::Path};
 
@@ -40,6 +40,8 @@ pub struct Inkling<A: Accelerator> {
     capacity: usize,
     position: usize,
     failed: bool,
+    scratch: Vec<A::Buffer>,
+    scratch_cursor: usize,
 }
 
 impl<A: Accelerator> Inkling<A> {
@@ -96,6 +98,8 @@ impl<A: Accelerator> Inkling<A> {
             capacity,
             position: 0,
             failed: false,
+            scratch: Vec::new(),
+            scratch_cursor: 0,
         };
         model.reset()?;
         Ok(model)
@@ -114,6 +118,17 @@ impl<A: Accelerator> Inkling<A> {
     }
 
     fn alloc(&mut self, n: usize) -> Result<A::Buffer> {
+        let bytes = n.checked_mul(4).context("buffer size overflow")?;
+        let index = self.scratch_cursor;
+        if index == self.scratch.len() {
+            self.scratch.push(self.device.allocate(bytes)?);
+        } else if self.scratch[index].byte_len() < bytes {
+            self.scratch[index] = self.device.allocate(bytes)?;
+        }
+        self.scratch_cursor += 1;
+        Ok(self.scratch[index].clone())
+    }
+    fn alloc_state(&mut self, n: usize) -> Result<A::Buffer> {
         self.device
             .allocate(n.checked_mul(4).context("buffer size overflow")?)
     }
@@ -399,7 +414,8 @@ impl<A: Accelerator> Inkling<A> {
             c.rel_extent
         };
         let geometry = [qh, kh, d, self.position, capacity, n, c.d_rel, extent];
-        let scores = self.alloc(qh * n)?;
+        // Reserve the maximum score extent once, not a larger buffer every token.
+        let scores = self.alloc(qh * capacity)?;
         let profiles = self.w(&format!("{p}.rel_logits_proj.proj"));
         self.run(
             "attn_scores",
@@ -586,6 +602,7 @@ impl<A: Accelerator> Inkling<A> {
         self.add(&residual, &x)
     }
     fn forward(&mut self, token: u32) -> Result<Vec<f32>> {
+        self.scratch_cursor = 0;
         let c = self.config.text_config.clone();
         let embed = self.weights["embed.weight"].clone();
         let hidden = self.alloc(c.hidden_size)?;
@@ -643,7 +660,9 @@ impl<A: Accelerator> Inkling<A> {
             c.unpadded_vocab_size,
             128,
         )?;
-        let bytes = self.device.read(&capped)?;
+        let bytes = self
+            .device
+            .read_prefix(&capped, c.unpadded_vocab_size * 4)?;
         let logits: Vec<_> = bytes
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
@@ -667,7 +686,15 @@ impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
     fn reset(&mut self) -> Result<()> {
         self.device.synchronize()?;
         self.failed = true;
-        self.caches.clear();
+        // Cache reads are bounded by the absolute sequence position. At position
+        // zero every visible KV entry and convolution tap is written before use;
+        // old allocations can be retained without clearing their contents.
+        if !self.caches.is_empty() {
+            self.position = 0;
+            self.scratch_cursor = 0;
+            self.failed = false;
+            return Ok(());
+        }
         let c = self.config.text_config.clone();
         for visit in c.schedule() {
             let (_, heads, dim) = c.attention_shape(visit.layer);
@@ -679,10 +706,10 @@ impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
             let kv = heads * dim;
             let mut conv = Vec::new();
             for n in [kv, kv, c.hidden_size, c.hidden_size] {
-                conv.push(self.alloc(n * c.sconv_kernel_size)?);
+                conv.push(self.alloc_state(n * c.sconv_kernel_size)?);
             }
-            let keys = self.alloc(capacity * kv)?;
-            let values = self.alloc(capacity * kv)?;
+            let keys = self.alloc_state(capacity * kv)?;
+            let values = self.alloc_state(capacity * kv)?;
             self.caches.push(Cache {
                 keys,
                 values,

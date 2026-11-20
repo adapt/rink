@@ -39,6 +39,7 @@ pub struct Metal {
     device: Device,
     queue: metal::CommandQueue,
     pending: Option<metal::CommandBuffer>,
+    encoder: Option<metal::ComputeCommandEncoder>,
     libraries: HashMap<String, (String, metal::Library)>,
     owner: Arc<()>,
     name: String,
@@ -56,6 +57,7 @@ impl Metal {
             device,
             queue,
             pending: None,
+            encoder: None,
             libraries: HashMap::new(),
             owner: Arc::new(()),
             name,
@@ -75,20 +77,8 @@ impl Metal {
     pub fn reset_stats(&mut self) {
         self.stats = MetalStats::default();
     }
-}
 
-// SAFETY: command buffers retain their resources. All host reads and Drop wait for completion.
-// Ownership tags reject resources from other streams, avoiding cross-stream data races.
-unsafe impl Accelerator for Metal {
-    type Buffer = MetalBuffer;
-    type Kernel = MetalKernel;
-    fn kind(&self) -> AcceleratorKind {
-        AcceleratorKind::Metal
-    }
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn allocate(&mut self, bytes: usize) -> Result<MetalBuffer> {
+    fn new_buffer(&mut self, bytes: usize, data: Option<&[u8]>) -> Result<MetalBuffer> {
         let start = self.profiling.then(Instant::now);
         ensure!(
             bytes > 0 && bytes <= self.device.max_buffer_length() as usize,
@@ -113,9 +103,14 @@ unsafe impl Accelerator for Metal {
         ensure!(!ptr.is_null(), "Metal could not allocate {bytes} bytes");
         // SAFETY: newBuffer returned a non-null owned (+1) MTLBuffer.
         let raw = unsafe { metal::Buffer::from_ptr(ptr) };
-        // SAFETY: new shared buffer, no pending GPU accesses, exactly its allocated length.
+        // SAFETY: new shared buffer with no GPU accesses. Initialize exactly once;
+        // uploads overwrite the whole allocation and need no preceding zero fill.
         unsafe {
-            std::ptr::write_bytes(raw.contents().cast::<u8>(), 0, bytes);
+            if let Some(data) = data {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), raw.contents().cast(), bytes);
+            } else {
+                std::ptr::write_bytes(raw.contents().cast::<u8>(), 0, bytes);
+            }
         }
         self.stats.allocations += 1;
         self.stats.allocated_bytes += bytes as u64;
@@ -127,17 +122,25 @@ unsafe impl Accelerator for Metal {
             owner: self.owner.clone(),
         })
     }
+}
+
+// SAFETY: command buffers retain resources, serial compute encoders preserve
+// dependencies, and host reads and Drop wait for completion. Ownership tags
+// reject resources from other streams.
+unsafe impl Accelerator for Metal {
+    type Buffer = MetalBuffer;
+    type Kernel = MetalKernel;
+    fn kind(&self) -> AcceleratorKind {
+        AcceleratorKind::Metal
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn allocate(&mut self, bytes: usize) -> Result<MetalBuffer> {
+        self.new_buffer(bytes, None)
+    }
     fn upload(&mut self, bytes: &[u8]) -> Result<MetalBuffer> {
-        let buffer = self.allocate(bytes.len())?;
-        // SAFETY: the newly allocated shared buffer does not alias the source.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                buffer.raw.contents().cast(),
-                bytes.len(),
-            );
-        }
-        Ok(buffer)
+        self.new_buffer(bytes.len(), Some(bytes))
     }
     fn compile(&mut self, source: &KernelSource<'_>, entry: &str) -> Result<MetalKernel> {
         objc::rc::autoreleasepool(|| {
@@ -210,13 +213,19 @@ unsafe impl Accelerator for Metal {
                     !b.is_empty() && b.len() <= 4096,
                     "inline argument must contain 1..=4096 bytes"
                 ),
+                Argument::Skip => {}
             }
         }
         objc::rc::autoreleasepool(|| {
             let command = self
                 .pending
                 .get_or_insert_with(|| self.queue.new_command_buffer().to_owned());
-            let encoder = command.new_compute_command_encoder();
+            // The default encoder uses serial dispatch with tracked resources:
+            // writes from one dispatch are visible to dependent dispatches.
+            let encoder = self.encoder.get_or_insert_with(|| {
+                self.stats.encoders += 1;
+                command.new_compute_command_encoder().to_owned()
+            });
             encoder.set_compute_pipeline_state(&kernel.pipeline);
             for (i, arg) in args.iter().enumerate() {
                 match arg {
@@ -224,22 +233,24 @@ unsafe impl Accelerator for Metal {
                     Argument::Bytes(b) => {
                         encoder.set_bytes(i as u64, b.len() as u64, b.as_ptr().cast())
                     }
+                    Argument::Skip => {}
                 }
             }
             encoder.dispatch_thread_groups(
                 MTLSize::new(threads.div_ceil(group_size) as u64, 1, 1),
                 MTLSize::new(group_size as u64, 1, 1),
             );
-            encoder.end_encoding();
         });
         self.stats.dispatches += 1;
-        self.stats.encoders += 1;
         if let Some(start) = start {
             self.stats.encoding_seconds += start.elapsed().as_secs_f64();
         }
         Ok(())
     }
     fn synchronize(&mut self) -> Result<()> {
+        if let Some(encoder) = self.encoder.take() {
+            encoder.end_encoding();
+        }
         if let Some(command) = self.pending.take() {
             let start = self.profiling.then(Instant::now);
             command.commit();
@@ -266,17 +277,21 @@ unsafe impl Accelerator for Metal {
         Ok(())
     }
     fn read(&mut self, buffer: &MetalBuffer) -> Result<Vec<u8>> {
+        self.read_prefix(buffer, buffer.byte_len())
+    }
+    fn read_prefix(&mut self, buffer: &MetalBuffer, bytes: usize) -> Result<Vec<u8>> {
+        ensure!(bytes <= buffer.byte_len(), "read exceeds buffer size");
         ensure!(
             Arc::ptr_eq(&buffer.owner, &self.owner),
             "buffer belongs to a different device stream"
         );
         self.synchronize()?;
-        self.stats.readback_bytes += buffer.byte_len() as u64;
+        self.stats.readback_bytes += bytes as u64;
         // SAFETY: shared storage; all work is complete, and the slice fits the buffer.
-        Ok(unsafe {
-            std::slice::from_raw_parts(buffer.raw.contents().cast::<u8>(), buffer.byte_len())
-        }
-        .to_vec())
+        Ok(
+            unsafe { std::slice::from_raw_parts(buffer.raw.contents().cast::<u8>(), bytes) }
+                .to_vec(),
+        )
     }
 }
 impl Drop for Metal {

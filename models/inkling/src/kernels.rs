@@ -70,9 +70,9 @@ impl<A: Accelerator> Kernels<A> {
         group: usize,
     ) -> Result<()> {
         let mut args: Vec<_> = buffers.iter().map(|b| Argument::Buffer(*b)).collect();
-        // Parameter block is always binding 15. Unused bindings alias the output.
+        // Parameter block is always binding 15. Unused slots need no resource binding.
         while args.len() < 15 {
-            args.push(Argument::Buffer(buffers[0]));
+            args.push(Argument::Skip);
         }
         args.push(Argument::Bytes(bytemuck::bytes_of(&p)));
         // SAFETY: forwarded caller contract; argument bytes live until dispatch copies them.

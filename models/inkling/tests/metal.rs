@@ -38,12 +38,26 @@ fn tiny_decoder_matches_scalar_reference_and_reset() {
     }
     let e: Expected = serde_json::from_str(include_str!("fixtures/tiny/expected.json")).unwrap();
     let mut model = Inkling::load(Metal::new().unwrap(), &path, e.tokens.len()).unwrap();
-    for (&id, expected) in e.tokens.iter().zip(&e.logits) {
+    let mut allocations = 0;
+    for (i, (&id, expected)) in e.tokens.iter().zip(&e.logits).enumerate() {
         close(&model.step(id).unwrap(), expected, 0.0002);
+        if i == 0 {
+            allocations = model.accelerator().stats().allocations;
+        }
+        assert_eq!(
+            model.accelerator().stats().allocations,
+            allocations,
+            "scratch should be reused after the first token"
+        );
     }
     assert_eq!(model.position(), e.tokens.len());
     assert!(model.step(1).is_err());
     model.reset().unwrap();
+    assert_eq!(
+        model.accelerator().stats().allocations,
+        allocations,
+        "reset should reuse cache allocations"
+    );
     assert_eq!(model.position(), 0);
     assert!(model.step(15).is_err());
     close(&model.step(e.tokens[0]).unwrap(), &e.logits[0], 0.0002);
