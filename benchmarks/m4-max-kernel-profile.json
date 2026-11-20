@@ -1,0 +1,482 @@
+{
+  "context": 4096,
+  "device": "Apple M4 Max",
+  "load": {
+    "allocated_bytes": 19500947488,
+    "allocations": 1078,
+    "command_buffers": 0,
+    "cpu_allocation_seconds": 11.898905461000012,
+    "cpu_encoding_seconds": 0.0,
+    "dispatches": 0,
+    "encoders": 0,
+    "gpu_seconds": 0.0,
+    "kernels": {},
+    "readback_bytes": 0,
+    "seconds": 12.322056667,
+    "tokens": 0,
+    "tokens_per_second": 0.0,
+    "wait_seconds": 0.0
+  },
+  "profile_kernels": true,
+  "reference": false,
+  "trials": [
+    {
+      "decode": {
+        "allocated_bytes": 0,
+        "allocations": 0,
+        "command_buffers": 8,
+        "cpu_allocation_seconds": 0.0,
+        "cpu_encoding_seconds": 0.017240189000000156,
+        "dispatches": 8452,
+        "encoders": 8452,
+        "gpu_seconds": 0.157366041559726,
+        "kernels": {
+          "inkling-2-mini-v1::add": {
+            "dispatches": 352,
+            "gpu_seconds": 0.0008059929999999973
+          },
+          "inkling-2-mini-v1::argmax_finish": {
+            "dispatches": 4,
+            "gpu_seconds": 2.0916e-05
+          },
+          "inkling-2-mini-v1::argmax_partial": {
+            "dispatches": 4,
+            "gpu_seconds": 2.5167e-05
+          },
+          "inkling-2-mini-v1::attention_finish": {
+            "dispatches": 192,
+            "gpu_seconds": 0.001054124999999999
+          },
+          "inkling-2-mini-v1::attention_partition": {
+            "dispatches": 192,
+            "gpu_seconds": 0.005691208999999999
+          },
+          "inkling-2-mini-v1::block_read_parallel": {
+            "dispatches": 832,
+            "gpu_seconds": 0.02306482099999998
+          },
+          "inkling-2-mini-v1::cache_write": {
+            "dispatches": 192,
+            "gpu_seconds": 0.0007153779999999994
+          },
+          "inkling-2-mini-v1::clip": {
+            "dispatches": 576,
+            "gpu_seconds": 0.0024331579999999986
+          },
+          "inkling-2-mini-v1::concat_norm": {
+            "dispatches": 384,
+            "gpu_seconds": 0.008465002
+          },
+          "inkling-2-mini-v1::controller": {
+            "dispatches": 384,
+            "gpu_seconds": 0.001192336
+          },
+          "inkling-2-mini-v1::convolution": {
+            "dispatches": 768,
+            "gpu_seconds": 0.0038871259999999942
+          },
+          "inkling-2-mini-v1::copy_vec": {
+            "dispatches": 40,
+            "gpu_seconds": 9.695800000000002e-05
+          },
+          "inkling-2-mini-v1::embedding": {
+            "dispatches": 4,
+            "gpu_seconds": 1.3333e-05
+          },
+          "inkling-2-mini-v1::expert_matvec": {
+            "dispatches": 384,
+            "gpu_seconds": 0.031120530999999996
+          },
+          "inkling-2-mini-v1::expert_sum": {
+            "dispatches": 192,
+            "gpu_seconds": 0.001178752000000001
+          },
+          "inkling-2-mini-v1::matvec": {
+            "dispatches": 640,
+            "gpu_seconds": 0.022915514999999997
+          },
+          "inkling-2-mini-v1::matvec4": {
+            "dispatches": 2116,
+            "gpu_seconds": 0.05957287100000003
+          },
+          "inkling-2-mini-v1::rms": {
+            "dispatches": 808,
+            "gpu_seconds": 0.020053097999999988
+          },
+          "inkling-2-mini-v1::route": {
+            "dispatches": 192,
+            "gpu_seconds": 0.013945952000000001
+          },
+          "inkling-2-mini-v1::softcap": {
+            "dispatches": 4,
+            "gpu_seconds": 2.6958000000000002e-05
+          },
+          "inkling-2-mini-v1::swiglu": {
+            "dispatches": 192,
+            "gpu_seconds": 0.0010318800000000009
+          }
+        },
+        "readback_bytes": 32,
+        "seconds": 0.180859416,
+        "tokens": 4,
+        "tokens_per_second": 22.116625655807713,
+        "wait_seconds": 0.16053546
+      },
+      "generated_ids": [
+        151537,
+        153671,
+        13,
+        68014
+      ],
+      "prefill": {
+        "allocated_bytes": 968608184,
+        "allocations": 2057,
+        "command_buffers": 2,
+        "cpu_allocation_seconds": 0.05677104899999992,
+        "cpu_encoding_seconds": 0.00542954499999996,
+        "dispatches": 2113,
+        "encoders": 2113,
+        "gpu_seconds": 0.38703300000634044,
+        "kernels": {
+          "inkling-2-mini-v1::add": {
+            "dispatches": 88,
+            "gpu_seconds": 0.000341121
+          },
+          "inkling-2-mini-v1::argmax_finish": {
+            "dispatches": 1,
+            "gpu_seconds": 6.125000000000001e-06
+          },
+          "inkling-2-mini-v1::argmax_partial": {
+            "dispatches": 1,
+            "gpu_seconds": 6.333e-06
+          },
+          "inkling-2-mini-v1::attention_finish": {
+            "dispatches": 48,
+            "gpu_seconds": 0.00035695900000000006
+          },
+          "inkling-2-mini-v1::attention_partition": {
+            "dispatches": 48,
+            "gpu_seconds": 0.001635124
+          },
+          "inkling-2-mini-v1::block_read_parallel": {
+            "dispatches": 208,
+            "gpu_seconds": 0.0056195780000000035
+          },
+          "inkling-2-mini-v1::cache_write": {
+            "dispatches": 48,
+            "gpu_seconds": 0.000202707
+          },
+          "inkling-2-mini-v1::clip": {
+            "dispatches": 144,
+            "gpu_seconds": 0.00145504
+          },
+          "inkling-2-mini-v1::concat_norm": {
+            "dispatches": 96,
+            "gpu_seconds": 0.0025912010000000004
+          },
+          "inkling-2-mini-v1::controller": {
+            "dispatches": 96,
+            "gpu_seconds": 0.000470332
+          },
+          "inkling-2-mini-v1::convolution": {
+            "dispatches": 192,
+            "gpu_seconds": 0.005634371999999997
+          },
+          "inkling-2-mini-v1::copy_vec": {
+            "dispatches": 10,
+            "gpu_seconds": 3.092e-05
+          },
+          "inkling-2-mini-v1::embedding_batch": {
+            "dispatches": 1,
+            "gpu_seconds": 4.459e-06
+          },
+          "inkling-2-mini-v1::expert_matvec": {
+            "dispatches": 96,
+            "gpu_seconds": 0.22793332900000005
+          },
+          "inkling-2-mini-v1::expert_sum": {
+            "dispatches": 48,
+            "gpu_seconds": 0.00044100300000000003
+          },
+          "inkling-2-mini-v1::matmul": {
+            "dispatches": 688,
+            "gpu_seconds": 0.19059816500000015
+          },
+          "inkling-2-mini-v1::matvec4": {
+            "dispatches": 1,
+            "gpu_seconds": 0.0018335830000000002
+          },
+          "inkling-2-mini-v1::rms": {
+            "dispatches": 202,
+            "gpu_seconds": 0.008798669999999998
+          },
+          "inkling-2-mini-v1::route": {
+            "dispatches": 48,
+            "gpu_seconds": 0.003793582
+          },
+          "inkling-2-mini-v1::softcap": {
+            "dispatches": 1,
+            "gpu_seconds": 8.792e-06
+          },
+          "inkling-2-mini-v1::swiglu": {
+            "dispatches": 48,
+            "gpu_seconds": 0.0005092500000000002
+          }
+        },
+        "readback_bytes": 8,
+        "seconds": 0.454385083,
+        "tokens": 32,
+        "tokens_per_second": 70.42484711145326,
+        "wait_seconds": 0.388370959
+      },
+      "repetition": 0,
+      "reset": {
+        "allocated_bytes": 0,
+        "allocations": 0,
+        "command_buffers": 0,
+        "cpu_allocation_seconds": 0.0,
+        "cpu_encoding_seconds": 0.0,
+        "dispatches": 0,
+        "encoders": 0,
+        "gpu_seconds": 0.0,
+        "kernels": {},
+        "readback_bytes": 0,
+        "seconds": 8.3e-08,
+        "tokens": 0,
+        "tokens_per_second": 0.0,
+        "wait_seconds": 0.0
+      }
+    },
+    {
+      "decode": {
+        "allocated_bytes": 0,
+        "allocations": 0,
+        "command_buffers": 8,
+        "cpu_allocation_seconds": 0.0,
+        "cpu_encoding_seconds": 0.0167103369999998,
+        "dispatches": 8452,
+        "encoders": 8452,
+        "gpu_seconds": 0.15827870822977275,
+        "kernels": {
+          "inkling-2-mini-v1::add": {
+            "dispatches": 352,
+            "gpu_seconds": 0.0008127029999999972
+          },
+          "inkling-2-mini-v1::argmax_finish": {
+            "dispatches": 4,
+            "gpu_seconds": 2.2125e-05
+          },
+          "inkling-2-mini-v1::argmax_partial": {
+            "dispatches": 4,
+            "gpu_seconds": 2.5375e-05
+          },
+          "inkling-2-mini-v1::attention_finish": {
+            "dispatches": 192,
+            "gpu_seconds": 0.001049453999999999
+          },
+          "inkling-2-mini-v1::attention_partition": {
+            "dispatches": 192,
+            "gpu_seconds": 0.005708785
+          },
+          "inkling-2-mini-v1::block_read_parallel": {
+            "dispatches": 832,
+            "gpu_seconds": 0.023083836000000003
+          },
+          "inkling-2-mini-v1::cache_write": {
+            "dispatches": 192,
+            "gpu_seconds": 0.0007032559999999993
+          },
+          "inkling-2-mini-v1::clip": {
+            "dispatches": 576,
+            "gpu_seconds": 0.002457220000000001
+          },
+          "inkling-2-mini-v1::concat_norm": {
+            "dispatches": 384,
+            "gpu_seconds": 0.008514491999999999
+          },
+          "inkling-2-mini-v1::controller": {
+            "dispatches": 384,
+            "gpu_seconds": 0.001205716
+          },
+          "inkling-2-mini-v1::convolution": {
+            "dispatches": 768,
+            "gpu_seconds": 0.003938992999999997
+          },
+          "inkling-2-mini-v1::copy_vec": {
+            "dispatches": 40,
+            "gpu_seconds": 9.8583e-05
+          },
+          "inkling-2-mini-v1::embedding": {
+            "dispatches": 4,
+            "gpu_seconds": 1.4334000000000002e-05
+          },
+          "inkling-2-mini-v1::expert_matvec": {
+            "dispatches": 384,
+            "gpu_seconds": 0.031167243000000004
+          },
+          "inkling-2-mini-v1::expert_sum": {
+            "dispatches": 192,
+            "gpu_seconds": 0.0012031650000000004
+          },
+          "inkling-2-mini-v1::matvec": {
+            "dispatches": 640,
+            "gpu_seconds": 0.02296707999999996
+          },
+          "inkling-2-mini-v1::matvec4": {
+            "dispatches": 2116,
+            "gpu_seconds": 0.05995210100000002
+          },
+          "inkling-2-mini-v1::rms": {
+            "dispatches": 808,
+            "gpu_seconds": 0.020207093999999988
+          },
+          "inkling-2-mini-v1::route": {
+            "dispatches": 192,
+            "gpu_seconds": 0.014000667000000003
+          },
+          "inkling-2-mini-v1::softcap": {
+            "dispatches": 4,
+            "gpu_seconds": 3.6916000000000004e-05
+          },
+          "inkling-2-mini-v1::swiglu": {
+            "dispatches": 192,
+            "gpu_seconds": 0.0010824980000000005
+          }
+        },
+        "readback_bytes": 32,
+        "seconds": 0.181394917,
+        "tokens": 4,
+        "tokens_per_second": 22.051334547593747,
+        "wait_seconds": 0.16154799999999997
+      },
+      "generated_ids": [
+        151537,
+        153671,
+        13,
+        68014
+      ],
+      "prefill": {
+        "allocated_bytes": 128,
+        "allocations": 1,
+        "command_buffers": 2,
+        "cpu_allocation_seconds": 1.6458e-05,
+        "cpu_encoding_seconds": 0.0062264350000000345,
+        "dispatches": 2113,
+        "encoders": 2113,
+        "gpu_seconds": 0.38782770838588476,
+        "kernels": {
+          "inkling-2-mini-v1::add": {
+            "dispatches": 88,
+            "gpu_seconds": 0.0003721679999999999
+          },
+          "inkling-2-mini-v1::argmax_finish": {
+            "dispatches": 1,
+            "gpu_seconds": 4.958000000000001e-06
+          },
+          "inkling-2-mini-v1::argmax_partial": {
+            "dispatches": 1,
+            "gpu_seconds": 6.375000000000001e-06
+          },
+          "inkling-2-mini-v1::attention_finish": {
+            "dispatches": 48,
+            "gpu_seconds": 0.0003622489999999999
+          },
+          "inkling-2-mini-v1::attention_partition": {
+            "dispatches": 48,
+            "gpu_seconds": 0.0016373300000000002
+          },
+          "inkling-2-mini-v1::block_read_parallel": {
+            "dispatches": 208,
+            "gpu_seconds": 0.005610539999999999
+          },
+          "inkling-2-mini-v1::cache_write": {
+            "dispatches": 48,
+            "gpu_seconds": 0.000228087
+          },
+          "inkling-2-mini-v1::clip": {
+            "dispatches": 144,
+            "gpu_seconds": 0.00240679
+          },
+          "inkling-2-mini-v1::concat_norm": {
+            "dispatches": 96,
+            "gpu_seconds": 0.0026189989999999995
+          },
+          "inkling-2-mini-v1::controller": {
+            "dispatches": 96,
+            "gpu_seconds": 0.00048553900000000006
+          },
+          "inkling-2-mini-v1::convolution": {
+            "dispatches": 192,
+            "gpu_seconds": 0.005890961999999997
+          },
+          "inkling-2-mini-v1::copy_vec": {
+            "dispatches": 10,
+            "gpu_seconds": 3.5666e-05
+          },
+          "inkling-2-mini-v1::embedding_batch": {
+            "dispatches": 1,
+            "gpu_seconds": 4.667e-06
+          },
+          "inkling-2-mini-v1::expert_matvec": {
+            "dispatches": 96,
+            "gpu_seconds": 0.22792116800000006
+          },
+          "inkling-2-mini-v1::expert_sum": {
+            "dispatches": 48,
+            "gpu_seconds": 0.00045271399999999995
+          },
+          "inkling-2-mini-v1::matmul": {
+            "dispatches": 688,
+            "gpu_seconds": 0.189528323
+          },
+          "inkling-2-mini-v1::matvec4": {
+            "dispatches": 1,
+            "gpu_seconds": 0.0018514590000000002
+          },
+          "inkling-2-mini-v1::rms": {
+            "dispatches": 202,
+            "gpu_seconds": 0.008810871999999994
+          },
+          "inkling-2-mini-v1::route": {
+            "dispatches": 48,
+            "gpu_seconds": 0.003801332999999999
+          },
+          "inkling-2-mini-v1::softcap": {
+            "dispatches": 1,
+            "gpu_seconds": 8.750000000000001e-06
+          },
+          "inkling-2-mini-v1::swiglu": {
+            "dispatches": 48,
+            "gpu_seconds": 0.0005271240000000001
+          }
+        },
+        "readback_bytes": 8,
+        "seconds": 0.395959041,
+        "tokens": 32,
+        "tokens_per_second": 80.81643979938823,
+        "wait_seconds": 0.388663833
+      },
+      "repetition": 1,
+      "reset": {
+        "allocated_bytes": 0,
+        "allocations": 0,
+        "command_buffers": 0,
+        "cpu_allocation_seconds": 0.0,
+        "cpu_encoding_seconds": 0.0,
+        "dispatches": 0,
+        "encoders": 0,
+        "gpu_seconds": 0.0,
+        "kernels": {},
+        "readback_bytes": 0,
+        "seconds": 2.5e-07,
+        "tokens": 0,
+        "tokens_per_second": 0.0,
+        "wait_seconds": 0.0
+      }
+    }
+  ],
+  "revision": "a6ce376",
+  "checkpoint_revision": "6e7c8248f75265bdd4fbab5273304243b5d8c2cb",
+  "date": "2026-11-20",
+  "command": "rink bench --profile-kernels --prompt-tokens 32 --decode-tokens 4 --repetitions 2 --context 4096"
+}

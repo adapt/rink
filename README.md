@@ -129,8 +129,8 @@ each dispatch using a separate compute pass and changes scheduling; disable it
 when measuring normal throughput. The JSON `kernels` entries report invocation
 counts and GPU durations for each phase.
 Recorded M4 Max results, methodology, and remaining bottlenecks are in
-[the benchmark report](benchmarks/README.md): approximately 6× faster prompt
-processing and 1.5× faster decoding than the initial implementation.
+[the benchmark report](benchmarks/README.md), including before/after measurements
+and raw JSON for each optimization pass.
 
 ```sh
 cargo fmt --all --check
