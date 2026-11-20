@@ -103,6 +103,20 @@ one accelerator; multi-device model sharding is not implemented.
 
 ## Validation
 
+Run fixed-work performance trials with the same checkpoint, context, and token counts:
+
+```sh
+cargo run --release -- bench --prompt-tokens 32,128 --decode-tokens 32 \
+  --repetitions 3 --context 4096 > benchmark.json
+```
+
+The benchmark loads once, warms the runtime, and resets the conversation before each
+trial. JSON records load/reset/prefill/decode timings, generated token IDs, Metal
+allocation and dispatch counts, CPU allocation/encoding time, GPU command-buffer
+execution time, synchronization wait time, and readback bytes. GPU and wait timings
+overlap and must not be added together. Decode uses fixed token counts through EOS.
+`--reference` forces single-token prefill and CPU sampling for comparison.
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings

@@ -63,6 +63,27 @@ pub trait AutoregressiveModel {
     fn position(&self) -> usize;
     fn reset(&mut self) -> Result<()>;
     fn step(&mut self, token: u32) -> Result<Vec<f32>>;
+
+    /// Process a prompt and return only the final position's logits.
+    fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
+        ensure!(!tokens.is_empty(), "prompt must not be empty");
+        ensure!(
+            tokens.len() <= self.context_capacity().saturating_sub(self.position()),
+            "prompt exceeds context capacity"
+        );
+        let mut logits = Vec::new();
+        for &token in tokens {
+            logits = self.step(token)?;
+        }
+        Ok(logits)
+    }
+    /// Backends may select on-device instead of returning the full vocabulary.
+    fn step_greedy(&mut self, token: u32) -> Result<u32> {
+        greedy(&self.step(token)?)
+    }
+    fn prefill_greedy(&mut self, tokens: &[u32]) -> Result<u32> {
+        greedy(&self.prefill(tokens)?)
+    }
 }
 
 /// Deterministic greedy sampling; padded vocabulary entries must already be removed.

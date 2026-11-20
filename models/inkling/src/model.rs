@@ -106,6 +106,12 @@ impl<A: Accelerator> Inkling<A> {
     pub fn device_name(&self) -> &str {
         self.device.name()
     }
+    pub fn accelerator(&self) -> &A {
+        &self.device
+    }
+    pub fn accelerator_mut(&mut self) -> &mut A {
+        &mut self.device
+    }
 
     fn alloc(&mut self, n: usize) -> Result<A::Buffer> {
         self.device

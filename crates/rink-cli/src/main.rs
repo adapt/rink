@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
+mod bench;
+#[cfg(target_os = "macos")]
 mod chat;
 #[cfg(any(target_os = "macos", test))]
 mod session;
@@ -19,6 +21,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Benchmark fixed prompt/decode lengths; emit JSON with Metal counters and timings.
+    Bench {
+        #[arg(long, default_value = "checkpoints/inkling-2-mini")]
+        model: PathBuf,
+        #[arg(long, value_delimiter = ',', default_value = "32,128")]
+        prompt_tokens: Vec<usize>,
+        #[arg(long, default_value_t = 32)]
+        decode_tokens: usize,
+        #[arg(long, default_value_t = 3)]
+        repetitions: usize,
+        #[arg(long, default_value_t = 4096)]
+        context: usize,
+        /// Force single-token prefill and CPU sampling for comparison.
+        #[arg(long)]
+        reference: bool,
+    },
     /// Validate the model configuration and show its physical/virtual layer layout.
     Inspect {
         #[arg(long)]
@@ -62,6 +80,43 @@ enum Command {
 }
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Bench {
+            model,
+            prompt_tokens,
+            decode_tokens,
+            repetitions,
+            context,
+            reference,
+        } => {
+            ensure!(
+                repetitions > 0 && decode_tokens > 0,
+                "repetitions and decode tokens must be positive"
+            );
+            ensure!(
+                !prompt_tokens.is_empty()
+                    && prompt_tokens
+                        .iter()
+                        .all(|&n| n > 0
+                            && n.checked_add(decode_tokens).is_some_and(|n| n <= context)),
+                "prompt plus decode tokens must fit --context"
+            );
+            #[cfg(target_os = "macos")]
+            {
+                bench::run(
+                    model,
+                    prompt_tokens,
+                    decode_tokens,
+                    repetitions,
+                    context,
+                    reference,
+                )
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (model, reference);
+                anyhow::bail!("benchmark requires macOS with Metal")
+            }
+        }
         Command::Inspect { model } => {
             let c = rink_inkling::Config::load(model.join("config.json"))?;
             let t = &c.text_config;

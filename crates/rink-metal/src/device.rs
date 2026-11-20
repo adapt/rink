@@ -2,7 +2,22 @@ use foreign_types::ForeignType;
 use metal::{CompileOptions, Device, MTLCommandBufferStatus, MTLResourceOptions, MTLSize};
 use objc::{msg_send, sel, sel_impl};
 use rink_core::{Accelerator, AcceleratorKind, Argument, Buffer, KernelSource, Result, ensure};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
+
+/// Counters are always available; CPU/GPU timing is opt-in to avoid clock reads in normal use.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MetalStats {
+    pub allocations: u64,
+    pub allocated_bytes: u64,
+    pub dispatches: u64,
+    pub encoders: u64,
+    pub command_buffers: u64,
+    pub readback_bytes: u64,
+    pub allocation_seconds: f64,
+    pub encoding_seconds: f64,
+    pub gpu_seconds: f64,
+    pub wait_seconds: f64,
+}
 
 #[derive(Clone)]
 pub struct MetalBuffer {
@@ -27,6 +42,8 @@ pub struct Metal {
     libraries: HashMap<String, (String, metal::Library)>,
     owner: Arc<()>,
     name: String,
+    profiling: bool,
+    stats: MetalStats,
 }
 
 impl Metal {
@@ -42,10 +59,21 @@ impl Metal {
             libraries: HashMap::new(),
             owner: Arc::new(()),
             name,
+            profiling: false,
+            stats: MetalStats::default(),
         })
     }
     pub fn recommended_memory(&self) -> u64 {
         self.device.recommended_max_working_set_size()
+    }
+    pub fn set_profiling(&mut self, enabled: bool) {
+        self.profiling = enabled;
+    }
+    pub fn stats(&self) -> MetalStats {
+        self.stats
+    }
+    pub fn reset_stats(&mut self) {
+        self.stats = MetalStats::default();
     }
 }
 
@@ -61,6 +89,7 @@ unsafe impl Accelerator for Metal {
         &self.name
     }
     fn allocate(&mut self, bytes: usize) -> Result<MetalBuffer> {
+        let start = self.profiling.then(Instant::now);
         ensure!(
             bytes > 0 && bytes <= self.device.max_buffer_length() as usize,
             "invalid Metal allocation: {bytes} bytes"
@@ -87,6 +116,11 @@ unsafe impl Accelerator for Metal {
         // SAFETY: new shared buffer, no pending GPU accesses, exactly its allocated length.
         unsafe {
             std::ptr::write_bytes(raw.contents().cast::<u8>(), 0, bytes);
+        }
+        self.stats.allocations += 1;
+        self.stats.allocated_bytes += bytes as u64;
+        if let Some(start) = start {
+            self.stats.allocation_seconds += start.elapsed().as_secs_f64();
         }
         Ok(MetalBuffer {
             raw,
@@ -155,6 +189,7 @@ unsafe impl Accelerator for Metal {
         threads: usize,
         group_size: usize,
     ) -> Result<()> {
+        let start = self.profiling.then(Instant::now);
         ensure!(
             Arc::ptr_eq(&kernel.owner, &self.owner),
             "kernel belongs to a different device stream"
@@ -197,10 +232,16 @@ unsafe impl Accelerator for Metal {
             );
             encoder.end_encoding();
         });
+        self.stats.dispatches += 1;
+        self.stats.encoders += 1;
+        if let Some(start) = start {
+            self.stats.encoding_seconds += start.elapsed().as_secs_f64();
+        }
         Ok(())
     }
     fn synchronize(&mut self) -> Result<()> {
         if let Some(command) = self.pending.take() {
+            let start = self.profiling.then(Instant::now);
             command.commit();
             command.wait_until_completed();
             ensure!(
@@ -208,6 +249,19 @@ unsafe impl Accelerator for Metal {
                 "Metal command failed: {:?}",
                 command.status()
             );
+            self.stats.command_buffers += 1;
+            if let Some(start) = start {
+                self.stats.wait_seconds += start.elapsed().as_secs_f64();
+                #[allow(unexpected_cfgs)]
+                let (begin, end): (f64, f64) = unsafe {
+                    // SAFETY: completed MTLCommandBuffer; both selectors return CFTimeInterval.
+                    (
+                        msg_send![&*command, GPUStartTime],
+                        msg_send![&*command, GPUEndTime],
+                    )
+                };
+                self.stats.gpu_seconds += (end - begin).max(0.);
+            }
         }
         Ok(())
     }
@@ -217,6 +271,7 @@ unsafe impl Accelerator for Metal {
             "buffer belongs to a different device stream"
         );
         self.synchronize()?;
+        self.stats.readback_bytes += buffer.byte_len() as u64;
         // SAFETY: shared storage; all work is complete, and the slice fits the buffer.
         Ok(unsafe {
             std::slice::from_raw_parts(buffer.raw.contents().cast::<u8>(), buffer.byte_len())
