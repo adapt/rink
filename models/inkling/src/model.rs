@@ -49,6 +49,7 @@ pub struct Inkling<A: Accelerator> {
     failed: bool,
     scratch: Vec<A::Buffer>,
     scratch_cursor: usize,
+    batch: usize,
 }
 
 impl<A: Accelerator> Inkling<A> {
@@ -107,6 +108,7 @@ impl<A: Accelerator> Inkling<A> {
             failed: false,
             scratch: Vec::new(),
             scratch_cursor: 0,
+            batch: 1,
         };
         model.reset()?;
         Ok(model)
@@ -183,13 +185,34 @@ impl<A: Accelerator> Inkling<A> {
         )
     }
     fn linear(&mut self, name: &str, x: &A::Buffer, rows: usize, cols: usize) -> Result<A::Buffer> {
+        self.linear_offset(name, x, rows, cols, 0)
+    }
+    fn linear_offset(
+        &mut self,
+        name: &str,
+        x: &A::Buffer,
+        rows: usize,
+        cols: usize,
+        offset: usize,
+    ) -> Result<A::Buffer> {
         let w = self.weights[name].clone();
-        let y = self.alloc(rows)?;
+        let y = self.alloc(rows * self.batch)?;
         let vectorized = cols % 4 == 0 && rows >= 128;
+        if self.batch > 1 {
+            self.run(
+                "matmul",
+                &[&y, &w.buffer, x],
+                &[rows, cols, w.dtype, self.batch, offset],
+                &[],
+                rows.div_ceil(8) * self.batch.div_ceil(8) * 32,
+                32,
+            )?;
+            return Ok(y);
+        }
         self.run(
             if vectorized { "matvec4" } else { "matvec" },
             &[&y, &w.buffer, x],
-            &[rows, cols, w.dtype],
+            &[rows, cols, w.dtype, 1, offset],
             &[],
             if vectorized {
                 rows.div_ceil(4) * 32
@@ -208,6 +231,7 @@ impl<A: Accelerator> Inkling<A> {
         rows: usize,
     ) -> Result<A::Buffer> {
         let w = name.map(|n| self.w(n)).unwrap_or_else(|| x.clone());
+        let rows = rows * self.batch;
         let y = self.alloc(width * rows)?;
         self.run(
             "rms",
@@ -220,7 +244,7 @@ impl<A: Accelerator> Inkling<A> {
         Ok(y)
     }
     fn add(&mut self, a: &A::Buffer, b: &A::Buffer) -> Result<A::Buffer> {
-        let n = self.config.text_config.hidden_size;
+        let n = self.config.text_config.hidden_size * self.batch;
         let y = self.alloc(n)?;
         self.run("add", &[&y, a, b], &[n], &[], n, 128)?;
         Ok(y)
@@ -234,13 +258,13 @@ impl<A: Accelerator> Inkling<A> {
     ) -> Result<A::Buffer> {
         let n = self.config.text_config.hidden_size;
         let q = self.w(query);
-        let y = self.alloc(n)?;
+        let y = self.alloc(n * self.batch)?;
         self.run(
             "block_read",
             &[&y, &blocks.buffer, live, &q],
-            &[n, blocks.count + 1, offset, blocks.offset],
+            &[n, blocks.count + 1, offset, blocks.offset, self.batch],
             &[],
-            32,
+            self.batch * 32,
             32,
         )?;
         Ok(y)
@@ -248,25 +272,25 @@ impl<A: Accelerator> Inkling<A> {
     fn message_gate(&mut self, x: &A::Buffer, msg: &A::Buffer, prefix: &str) -> Result<A::Buffer> {
         let h = self.config.text_config.hidden_size;
         let rank = self.config.text_config.loop_config.gate_rank;
-        let cat = self.alloc(2 * h)?;
+        let cat = self.alloc(2 * h * self.batch)?;
         self.run(
             "concat_norm",
             &[&cat, x, msg],
-            &[h],
+            &[h, self.batch],
             &[self.config.text_config.rms_norm_eps],
-            32,
+            self.batch * 32,
             32,
         )?;
         let low = self.linear(&format!("{prefix}.down_weight"), &cat, rank, 2 * h)?;
         let forget = self.linear(&format!("{prefix}.forget_weight"), &low, h, rank)?;
         let gain = self.linear(&format!("{prefix}.gain_weight"), &low, h, rank)?;
-        let y = self.alloc(h)?;
+        let y = self.alloc(h * self.batch)?;
         self.run(
             "controller",
             &[&y, x, msg, &forget, &gain],
-            &[h],
+            &[h * self.batch],
             &[],
-            h,
+            h * self.batch,
             128,
         )?;
         Ok(y)
@@ -293,7 +317,7 @@ impl<A: Accelerator> Inkling<A> {
             (self.w(&format!("{prefix}.weight")), x.clone())
         };
         let history = self.caches[visit.cache].conv[state].clone();
-        let y = self.alloc(channels)?;
+        let y = self.alloc(channels * self.batch)?;
         self.run(
             "convolution",
             &[&y, x, &w, &history, &dyn_weights],
@@ -303,6 +327,7 @@ impl<A: Accelerator> Inkling<A> {
                 self.position,
                 usize::from(dynamic_input.is_some()),
                 dim,
+                self.batch,
             ],
             &[],
             channels,
@@ -317,16 +342,30 @@ impl<A: Accelerator> Inkling<A> {
         width: usize,
         heads: usize,
         threshold: f32,
-        tau: f32,
+        log_scale: bool,
     ) -> Result<A::Buffer> {
         let w = scale.map(|n| self.w(n)).unwrap_or_else(|| x.clone());
-        let y = self.alloc(width * heads)?;
+        let y = self.alloc(width * heads * self.batch)?;
         self.run(
             "clip",
             &[&y, x, &w],
-            &[width, heads, usize::from(scale.is_some())],
-            &[threshold, tau],
-            heads * 32,
+            &[
+                width,
+                heads,
+                usize::from(scale.is_some()),
+                self.batch,
+                self.position,
+                self.config.text_config.log_scaling_n_floor,
+            ],
+            &[
+                threshold,
+                if log_scale {
+                    self.config.text_config.log_scaling_alpha
+                } else {
+                    0.
+                },
+            ],
+            heads * self.batch * 32,
             32,
         )?;
         Ok(y)
@@ -388,21 +427,15 @@ impl<A: Accelerator> Inkling<A> {
             1,
             kh * d,
         )?;
-        let tau = if local {
-            1.
-        } else {
-            1. + c.log_scaling_alpha
-                * (((self.position + 1) as f32 / c.log_scaling_n_floor as f32).max(1.)).ln()
-        };
         let q = self.clip(
             &q,
             Some(&format!("{p}.q_l2_clip.scale")),
             d,
             qh,
             c.qk_l2_clip_threshold,
-            tau,
+            !local,
         )?;
-        let k = self.clip(&k, None, d, kh, c.qk_l2_clip_threshold, 1.)?;
+        let k = self.clip(&k, None, d, kh, c.qk_l2_clip_threshold, false)?;
         let v = self.norm(&v, None, d, kh)?;
         let r = self.clip(
             &r,
@@ -410,11 +443,11 @@ impl<A: Accelerator> Inkling<A> {
             c.d_rel,
             qh,
             c.rel_l2_clip_threshold,
-            tau,
+            !local,
         )?;
         let cache = &self.caches[visit.cache];
         let (keys, values, capacity) = (cache.keys.clone(), cache.values.clone(), cache.capacity);
-        let n = (self.position + 1).min(capacity);
+        let n = (self.position + self.batch).min(capacity);
         let extent = if local {
             c.sliding_window_size
         } else {
@@ -431,29 +464,35 @@ impl<A: Accelerator> Inkling<A> {
             c.d_rel,
             extent,
             parts,
-            1,
+            self.batch,
         ];
-        let partials = self.alloc(qh * capacity.div_ceil(128) * (d + 2))?;
+        let partials = self.alloc(self.batch * qh * capacity.div_ceil(128) * (d + 2))?;
         let profiles = self.w(&format!("{p}.rel_logits_proj.proj"));
         self.run(
             "attention_partition",
             &[&partials, &q, &keys, &values, &k, &v, &r, &profiles],
             &geometry,
             &[],
-            qh * parts * 128,
+            self.batch * qh * parts * 128,
             128,
         )?;
-        let gated = self.alloc(qh * d)?;
+        let gated = self.alloc(self.batch * qh * d)?;
         self.run(
             "attention_finish",
             &[&gated, &partials, &sink, &gate],
             &geometry,
             &[],
-            qh * 32,
+            self.batch * qh * 32,
             32,
         )?;
-        self.copy(&keys, (self.position % capacity) * kh * d, &k, 0, kh * d)?;
-        self.copy(&values, (self.position % capacity) * kh * d, &v, 0, kh * d)?;
+        self.run(
+            "cache_write",
+            &[&keys, &values, &k, &v],
+            &[kh * d, capacity, self.position, self.batch],
+            &[],
+            self.batch * kh * d,
+            128,
+        )?;
         self.linear(&format!("{p}.wo_ud.weight"), &gated, c.hidden_size, qh * d)
     }
     fn expert_projection(
@@ -481,13 +520,13 @@ impl<A: Accelerator> Inkling<A> {
             e.factors.clone(),
             e.format,
         );
-        let y = self.alloc(rows * top)?;
+        let y = self.alloc(rows * top * self.batch)?;
         self.run(
             "expert_matvec",
             &[&y, &w, &scales, &factors, x, routing],
-            &[rows, cols, top, format, usize::from(down)],
+            &[rows, cols, top, format, usize::from(down), self.batch],
             &[],
-            rows * top * 32,
+            rows * top * self.batch * 32,
             128,
         )?;
         Ok(y)
@@ -501,33 +540,33 @@ impl<A: Accelerator> Inkling<A> {
             c.hidden_size,
         )?;
         let bias = self.w(&format!("layers.{layer}.mlp.gate.bias"));
-        let routing = self.alloc(2 * c.num_experts_per_tok)?;
+        let routing = self.alloc(2 * c.num_experts_per_tok * self.batch)?;
         self.run(
             "route",
             &[&routing, &logits, &bias],
-            &[c.n_routed_experts, c.num_experts_per_tok],
+            &[c.n_routed_experts, c.num_experts_per_tok, self.batch],
             &[c.route_scale],
-            1,
-            1,
+            self.batch,
+            32,
         )?;
         let gu = self.expert_projection(layer, false, x, &routing)?;
-        let activated = self.alloc(c.intermediate_size * c.num_experts_per_tok)?;
+        let activated = self.alloc(c.intermediate_size * c.num_experts_per_tok * self.batch)?;
         self.run(
             "swiglu",
             &[&activated, &gu],
-            &[c.intermediate_size, c.num_experts_per_tok],
+            &[c.intermediate_size, c.num_experts_per_tok, self.batch],
             &[c.mlp_gate_softcap, c.mlp_up_softcap],
-            c.intermediate_size * c.num_experts_per_tok,
+            c.intermediate_size * c.num_experts_per_tok * self.batch,
             128,
         )?;
         let down = self.expert_projection(layer, true, &activated, &routing)?;
-        let y = self.alloc(c.hidden_size)?;
+        let y = self.alloc(c.hidden_size * self.batch)?;
         self.run(
             "expert_sum",
             &[&y, &down, &routing],
-            &[c.hidden_size, c.num_experts_per_tok],
+            &[c.hidden_size, c.num_experts_per_tok, self.batch],
             &[],
-            c.hidden_size,
+            c.hidden_size * self.batch,
             128,
         )?;
         Ok(y)
@@ -601,7 +640,13 @@ impl<A: Accelerator> Inkling<A> {
         let attn = self.attention(&inputs, visit)?;
         let attn = self.conv(&attn, None, &format!("{prefix}.attn_sconv"), visit, 2, h)?;
         let residual = if visit.layer % c.n_layers_per_attn_res_block == 0 {
-            self.copy(&blocks.buffer, blocks.count * h, hidden, 0, h)?;
+            self.copy(
+                &blocks.buffer,
+                blocks.count * h * self.batch,
+                hidden,
+                0,
+                h * self.batch,
+            )?;
             blocks.count += 1;
             attn
         } else {
@@ -629,22 +674,36 @@ impl<A: Accelerator> Inkling<A> {
         let x = self.conv(&x, None, &format!("{prefix}.mlp_sconv"), visit, 3, h)?;
         self.add(&residual, &x)
     }
-    fn hidden(&mut self, token: u32) -> Result<A::Buffer> {
+    fn hidden(&mut self, tokens: &[u32]) -> Result<A::Buffer> {
         self.scratch_cursor = 0;
+        self.batch = tokens.len();
         let c = self.config.text_config.clone();
         let embed = self.weights["embed.weight"].clone();
-        let hidden = self.alloc(c.hidden_size)?;
-        self.run(
-            "embedding",
-            &[&hidden, &embed.buffer],
-            &[c.hidden_size, token as usize, embed.dtype],
-            &[],
-            c.hidden_size,
-            128,
-        )?;
+        let hidden = self.alloc(c.hidden_size * self.batch)?;
+        if self.batch == 1 {
+            self.run(
+                "embedding",
+                &[&hidden, &embed.buffer],
+                &[c.hidden_size, tokens[0] as usize, embed.dtype],
+                &[],
+                c.hidden_size,
+                128,
+            )?;
+        } else {
+            let ids = self.device.upload(bytemuck::cast_slice(tokens))?;
+            self.run(
+                "embedding_batch",
+                &[&hidden, &embed.buffer, &ids],
+                &[c.hidden_size, self.batch, embed.dtype],
+                &[],
+                c.hidden_size * self.batch,
+                128,
+            )?;
+        }
         let mut hidden = self.norm(&hidden, Some("embed_norm.weight"), c.hidden_size, 1)?;
-        let bank_size =
-            (c.num_hidden_layers.div_ceil(c.n_layers_per_attn_res_block) + 1) * c.hidden_size;
+        let bank_size = (c.num_hidden_layers.div_ceil(c.n_layers_per_attn_res_block) + 1)
+            * c.hidden_size
+            * self.batch;
         let mut blocks = Blocks {
             buffer: self.alloc(bank_size)?,
             count: 0,
@@ -680,7 +739,7 @@ impl<A: Accelerator> Inkling<A> {
                         0,
                         &pre_blocks.buffer,
                         0,
-                        pre_blocks.count * c.hidden_size,
+                        pre_blocks.count * c.hidden_size * self.batch,
                     )?;
                 }
             }
@@ -698,11 +757,14 @@ impl<A: Accelerator> Inkling<A> {
     }
     fn project(&mut self, hidden: &A::Buffer) -> Result<A::Buffer> {
         let c = self.config.text_config.clone();
-        let logits = self.linear(
+        let offset = (self.batch - 1) * c.hidden_size;
+        self.batch = 1;
+        let logits = self.linear_offset(
             "unembed.weight",
             hidden,
             c.unpadded_vocab_size,
             c.hidden_size,
+            offset,
         )?;
         let capped = self.alloc(c.unpadded_vocab_size)?;
         self.run(
@@ -784,10 +846,10 @@ impl<A: Accelerator> Inkling<A> {
         self.validate_tokens(tokens)?;
         self.failed = true;
         let mut hidden = None;
-        for (i, &token) in tokens.iter().enumerate() {
-            hidden = Some(self.hidden(token)?);
-            self.position += 1;
-            if (i + 1) % 32 == 0 && i + 1 < tokens.len() {
+        for (i, chunk) in tokens.chunks(32).enumerate() {
+            hidden = Some(self.hidden(chunk)?);
+            self.position += chunk.len();
+            if (i + 1) * 32 < tokens.len() {
                 self.device.synchronize()?;
             }
         }
@@ -843,7 +905,7 @@ impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
     fn step(&mut self, token: u32) -> Result<Vec<f32>> {
         self.validate_tokens(&[token])?;
         self.failed = true;
-        let hidden = self.hidden(token)?;
+        let hidden = self.hidden(&[token])?;
         let result = self.logits(&hidden)?;
         self.position += 1;
         self.failed = false;
@@ -852,7 +914,7 @@ impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
     fn step_greedy(&mut self, token: u32) -> Result<u32> {
         self.validate_tokens(&[token])?;
         self.failed = true;
-        let hidden = self.hidden(token)?;
+        let hidden = self.hidden(&[token])?;
         let result = self.select(&hidden)?;
         self.position += 1;
         self.failed = false;

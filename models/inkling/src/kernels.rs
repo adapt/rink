@@ -37,8 +37,11 @@ impl<A: Accelerator> Kernels<A> {
         for name in [
             "copy_vec",
             "embedding",
+            "embedding_batch",
             "matvec",
             "matvec4",
+            "matmul",
+            "cache_write",
             "attention_partition",
             "attention_finish",
             "rms",

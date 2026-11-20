@@ -85,7 +85,7 @@ fn native_quantized_experts_match_scalar_values() {
             &mut d,
             "expert_matvec",
             &[&out, &weights, &scales, &factors, &input, &routing],
-            Params::new(&[1, 32, 2, 0, 0], &[]),
+            Params::new(&[1, 32, 2, 0, 0, 1], &[]),
             64,
             32,
         )
@@ -108,6 +108,45 @@ fn native_quantized_experts_match_scalar_values() {
     }
     close(&read(&mut d, &out), &expected, 0.0001);
 
+    let batch_input = upload(
+        &mut d,
+        &x.iter()
+            .copied()
+            .chain(x.iter().map(|v| -2. * v))
+            .collect::<Vec<_>>(),
+    );
+    let batch_routes = upload(&mut d, &[1., 0.4, 0., 0.6, 0., 0.25, 1., 0.75]);
+    let batch_out = d.allocate(16).unwrap();
+    // SAFETY: two tokens, each selecting two experts, with independent 32-value inputs.
+    unsafe {
+        k.run(
+            &mut d,
+            "expert_matvec",
+            &[
+                &batch_out,
+                &weights,
+                &scales,
+                &factors,
+                &batch_input,
+                &batch_routes,
+            ],
+            Params::new(&[1, 32, 2, 0, 0, 2], &[]),
+            128,
+            32,
+        )
+        .unwrap();
+    }
+    close(
+        &read(&mut d, &batch_out),
+        &[
+            expected[0],
+            expected[1],
+            -2. * expected[1],
+            -2. * expected[0],
+        ],
+        0.0002,
+    );
+
     let fp8: Vec<u8> = (0..64)
         .map(|i| [0x00, 0x01, 0x38, 0xbc, 0x7e, 0x80, 0x10, 0xf0][i % 8])
         .collect();
@@ -119,7 +158,7 @@ fn native_quantized_experts_match_scalar_values() {
             &mut d,
             "expert_matvec",
             &[&out, &weights, &scales, &factors, &input, &routing],
-            Params::new(&[1, 32, 2, 1, 0], &[]),
+            Params::new(&[1, 32, 2, 1, 0, 1], &[]),
             64,
             32,
         )
@@ -128,6 +167,30 @@ fn native_quantized_experts_match_scalar_values() {
     let values = [0., 1. / 512., 1., -1.5, 448., -0., 0.03125, -128.];
     let base: f32 = x.iter().enumerate().map(|(i, x)| x * values[i % 8]).sum();
     close(&read(&mut d, &out), &[base * 4., base * 0.5], 0.002);
+    // SAFETY: same two-token geometry, now using FP8 weights and scales.
+    unsafe {
+        k.run(
+            &mut d,
+            "expert_matvec",
+            &[
+                &batch_out,
+                &weights,
+                &scales,
+                &factors,
+                &batch_input,
+                &batch_routes,
+            ],
+            Params::new(&[1, 32, 2, 1, 0, 2], &[]),
+            128,
+            32,
+        )
+        .unwrap();
+    }
+    close(
+        &read(&mut d, &batch_out),
+        &[base * 4., base * 0.5, -base, -base * 8.],
+        0.004,
+    );
 }
 
 #[test]
@@ -144,7 +207,7 @@ fn routing_bias_selects_experts_without_changing_mixture_weights() {
             &mut d,
             "route",
             &[&out, &logits, &bias],
-            Params::new(&[3, 2], &[8.]),
+            Params::new(&[3, 2, 1], &[8.]),
             1,
             1,
         )
@@ -425,4 +488,101 @@ fn partitioned_attention_matches_scalar_with_tails_ring_and_causal_chunks() {
         }
         close(&read(&mut device, &out), &expected, 0.00001);
     }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn matrix_prefill_matches_scalar_for_partial_tiles() {
+    let mut device = Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut device).unwrap();
+    let (batch, rows, cols) = (13, 19, 37);
+    let x: Vec<f32> = (0..batch * cols).map(|i| (i as f32 * 0.2).cos()).collect();
+    let w: Vec<half::bf16> = (0..rows * cols)
+        .map(|i| half::bf16::from_f32((i as f32 * 0.03).sin()))
+        .collect();
+    let weights = device
+        .upload(
+            &w.iter()
+                .flat_map(|v| v.to_bits().to_le_bytes())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    let input = upload(&mut device, &x);
+    let output = device.allocate(batch * rows * 4).unwrap();
+    // SAFETY: rounded 8x8 tiles guard both the output boundaries and the reduction tail.
+    unsafe {
+        kernels
+            .run(
+                &mut device,
+                "matmul",
+                &[&output, &weights, &input],
+                Params::new(&[rows, cols, 1, batch, 0], &[]),
+                rows.div_ceil(8) * batch.div_ceil(8) * 32,
+                32,
+            )
+            .unwrap();
+    }
+    let mut expected = Vec::new();
+    for token in 0..batch {
+        for row in 0..rows {
+            expected.push(
+                (0..cols)
+                    .map(|c| x[token * cols + c] * w[row * cols + c].to_f32())
+                    .sum(),
+            );
+        }
+    }
+    close(&read(&mut device, &output), &expected, 0.00002);
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn batched_prefill_matches_token_steps_across_chunk_boundaries() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny");
+    let temporary = std::env::temp_dir().join(format!(
+        "rink-prefill-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&temporary).unwrap();
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.join("config.json")).unwrap()).unwrap();
+    config["text_config"]["model_max_length"] = 128.into();
+    std::fs::write(
+        temporary.join("config.json"),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixture.join("model.safetensors"),
+        temporary.join("model.safetensors"),
+    )
+    .unwrap();
+    let mut model = Inkling::load(Metal::new().unwrap(), &temporary, 96).unwrap();
+    let tokens: Vec<u32> = (0..65).map(|i| (i * 7 % 14) as u32).collect();
+    let reference: Vec<_> = tokens.iter().map(|&t| model.step(t).unwrap()).collect();
+    for chunk_size in [2, 7, 31, 32, 33, 65] {
+        model.reset().unwrap();
+        let mut position = 0;
+        for chunk in tokens.chunks(chunk_size) {
+            position += chunk.len();
+            close(
+                &model.prefill(chunk).unwrap(),
+                &reference[position - 1],
+                0.0003,
+            );
+            assert_eq!(model.position(), position);
+        }
+        assert_eq!(model.step_greedy(3).unwrap(), {
+            model.reset().unwrap();
+            for &t in &tokens {
+                model.step(t).unwrap();
+            }
+            rink_core::greedy(&model.step(3).unwrap()).unwrap()
+        });
+    }
+    std::fs::remove_dir_all(temporary).unwrap();
 }
