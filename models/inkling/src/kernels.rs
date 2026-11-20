@@ -53,6 +53,8 @@ impl<A: Accelerator> Kernels<A> {
             "concat_norm",
             "concat_norm_parallel",
             "controller",
+            "controller_matvec",
+            "controller_matmul",
             "convolution",
             "attn_scores",
             "attn_values",

@@ -28,6 +28,126 @@ fn close(a: &[f32], b: &[f32], tol: f32) {
 
 #[test]
 #[ignore = "requires a Metal GPU"]
+fn fused_controllers_match_separate_projections_for_dtypes_and_tiles() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    for (width, rank) in [(17usize, 7usize), (132, 64), (129, 35), (2304, 64)] {
+        for batch in [1usize, 3, 9] {
+            for (fdtype, gdtype) in [(0, 0), (1, 1), (1, 2)] {
+                let encode = |values: Vec<f32>, dtype| -> Vec<u8> {
+                    match dtype {
+                        0 => bytemuck::cast_slice(&values).to_vec(),
+                        1 => values
+                            .iter()
+                            .flat_map(|&v| half::bf16::from_f32(v).to_bits().to_le_bytes())
+                            .collect(),
+                        _ => values
+                            .iter()
+                            .flat_map(|&v| half::f16::from_f32(v).to_bits().to_le_bytes())
+                            .collect(),
+                    }
+                };
+                let f = d
+                    .upload(&encode(
+                        (0..width * rank)
+                            .map(|i| ((i * 11 % 37) as f32 - 18.) / 512.)
+                            .collect(),
+                        fdtype,
+                    ))
+                    .unwrap();
+                let g = d
+                    .upload(&encode(
+                        (0..width * rank)
+                            .map(|i| ((i * 7 % 31) as f32 - 15.) / 256.)
+                            .collect(),
+                        gdtype,
+                    ))
+                    .unwrap();
+                let low = upload(
+                    &mut d,
+                    &(0..batch * rank)
+                        .map(|i| ((i * 7 % 19) as f32 - 9.) / 16.)
+                        .collect::<Vec<_>>(),
+                );
+                let x = upload(
+                    &mut d,
+                    &(0..batch * width)
+                        .map(|i| ((i * 13 % 101) as f32 - 50.) / 32.)
+                        .collect::<Vec<_>>(),
+                );
+                let msg = upload(
+                    &mut d,
+                    &(0..batch * width)
+                        .map(|i| ((i * 17 % 59) as f32 - 29.) / 32.)
+                        .collect::<Vec<_>>(),
+                );
+                let forget = d.allocate(batch * width * 4).unwrap();
+                let gain = d.allocate(batch * width * 4).unwrap();
+                let old = d.allocate(batch * width * 4).unwrap();
+                let new = d.allocate(batch * width * 4).unwrap();
+                let vectorized = rank % 4 == 0 && width >= 128;
+                let (linear, threads, group) = if batch > 1 {
+                    ("matmul", width.div_ceil(8) * batch.div_ceil(8) * 32, 32)
+                } else if vectorized {
+                    ("matvec4", width.div_ceil(4) * 32, 128)
+                } else {
+                    ("matvec", width * 32, 128)
+                };
+                // SAFETY: all weights, activations, outputs, and dispatches follow
+                // the projection and controller ABIs, including partial tiles.
+                unsafe {
+                    k.run(
+                        &mut d,
+                        linear,
+                        &[&forget, &f, &low],
+                        Params::new(&[width, rank, fdtype, batch, 0], &[]),
+                        threads,
+                        group,
+                    )
+                    .unwrap();
+                    k.run(
+                        &mut d,
+                        linear,
+                        &[&gain, &g, &low],
+                        Params::new(&[width, rank, gdtype, batch, 0], &[]),
+                        threads,
+                        group,
+                    )
+                    .unwrap();
+                    k.run(
+                        &mut d,
+                        "controller",
+                        &[&old, &x, &msg, &forget, &gain],
+                        Params::new(&[batch * width], &[]),
+                        batch * width,
+                        128,
+                    )
+                    .unwrap();
+                    k.run(
+                        &mut d,
+                        if batch > 1 {
+                            "controller_matmul"
+                        } else {
+                            "controller_matvec"
+                        },
+                        &[&new, &x, &msg, &low, &f, &g],
+                        Params::new(
+                            &[width, rank, fdtype, gdtype, batch, usize::from(vectorized)],
+                            &[],
+                        ),
+                        threads,
+                        group,
+                    )
+                    .unwrap();
+                }
+                close(&read(&mut d, &new), &read(&mut d, &old), 0.00001);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
 fn parallel_routing_preserves_ties_bias_and_mixture_weights() {
     let mut d = Metal::new().unwrap();
     let k = Kernels::compile(&mut d).unwrap();

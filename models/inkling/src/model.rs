@@ -288,16 +288,41 @@ impl<A: Accelerator> Inkling<A> {
             group,
         )?;
         let low = self.linear(&format!("{prefix}.down_weight"), &cat, rank, 2 * h)?;
-        let forget = self.linear(&format!("{prefix}.forget_weight"), &low, h, rank)?;
-        let gain = self.linear(&format!("{prefix}.gain_weight"), &low, h, rank)?;
+        let forget = self.weights[&format!("{prefix}.forget_weight")].clone();
+        let gain = self.weights[&format!("{prefix}.gain_weight")].clone();
         let y = self.alloc(h * self.batch)?;
+        let vectorized = rank % 4 == 0 && h >= 128;
+        let (kernel, threads, group) = if self.batch > 1 {
+            (
+                "controller_matmul",
+                h.div_ceil(8) * self.batch.div_ceil(8) * 32,
+                32,
+            )
+        } else {
+            (
+                "controller_matvec",
+                if vectorized {
+                    h.div_ceil(4) * 32
+                } else {
+                    h * 32
+                },
+                128,
+            )
+        };
         self.run(
-            "controller",
-            &[&y, x, msg, &forget, &gain],
-            &[h * self.batch],
+            kernel,
+            &[&y, x, msg, &low, &forget.buffer, &gain.buffer],
+            &[
+                h,
+                rank,
+                forget.dtype,
+                gain.dtype,
+                self.batch,
+                usize::from(vectorized),
+            ],
             &[],
-            h * self.batch,
-            128,
+            threads,
+            group,
         )?;
         Ok(y)
     }

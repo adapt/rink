@@ -129,6 +129,31 @@ kernel void concat_norm(device float* y [[buffer(0)]], device const float* x [[b
 kernel void controller(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* msg [[buffer(2)]], device const float* forget [[buffer(3)]], device const float* gain [[buffer(4)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) {
     if(i<p.u[0]) y[i]=(1.f-tanh(forget[i]))*x[i]+tanh(gain[i])*msg[i];
 }
+// width, rank, forget dtype, gain dtype, batch, vectorized. Decode projects both
+// controller branches and applies their gates without materializing either one.
+kernel void controller_matvec(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* msg [[buffer(2)]], device const float* low [[buffer(3)]], device const uchar* forget [[buffer(4)]], device const uchar* gain [[buffer(5)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint count=p.u[5]?4:1,row=(t/32)*count,n=p.u[0],rank=p.u[1];if(row>=n)return;float4 f=0,g=0;
+    if(p.u[5]){
+        for(uint c=lane*4;c<rank;c+=128){float4 v=*((device const float4*)(low+c));for(uint r=0;r<4 && row+r<n;r++){f[r]+=dot(weight4(forget,(row+r)*rank+c,p.u[2]),v);g[r]+=dot(weight4(gain,(row+r)*rank+c,p.u[3]),v);}}
+    }else{
+        for(uint c=lane;c<rank;c+=32){f[0]+=weight(forget,row*rank+c,p.u[2])*low[c];g[0]+=weight(gain,row*rank+c,p.u[3])*low[c];}
+    }
+    for(uint r=0;r<count;r++){float fv=simd_sum(f[r]),gv=simd_sum(g[r]);if(lane==0 && row+r<n)y[row+r]=(1.f-tanh(fv))*x[row+r]+tanh(gv)*msg[row+r];}
+}
+// Same buffers and dimensions as controller_matvec; 8x8 batched projection tiles.
+kernel void controller_matmul(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* msg [[buffer(2)]], device const float* low [[buffer(3)]], device const uchar* forget [[buffer(4)]], device const uchar* gain [[buffer(5)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float a[256],f[256],g[256],rf[64],rg[64];uint tiles=(p.u[0]+7)/8,row=(group%tiles)*8,token=(group/tiles)*8;
+    simdgroup_float8x8 sf=make_filled_simdgroup_matrix<float,8,8>(0.f),sg=make_filled_simdgroup_matrix<float,8,8>(0.f);
+    for(uint base=0;base<p.u[1];base+=32){
+        for(uint i=lane;i<256;i+=32){uint r=i/32,c=i%32;a[i]=token+r<p.u[4] && base+c<p.u[1]?low[(token+r)*p.u[1]+base+c]:0.f;
+            bool valid=row+r<p.u[0] && base+c<p.u[1];f[c*8+r]=valid?weight(forget,(row+r)*p.u[1]+base+c,p.u[2]):0.f;g[c*8+r]=valid?weight(gain,(row+r)*p.u[1]+base+c,p.u[3]):0.f;}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for(uint k=0;k<32;k+=8){simdgroup_float8x8 av,fv,gv;simdgroup_load(av,a+k,32);simdgroup_load(fv,f+k*8,8);simdgroup_load(gv,g+k*8,8);simdgroup_multiply_accumulate(sf,av,fv,sf);simdgroup_multiply_accumulate(sg,av,gv,sg);}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    simdgroup_store(sf,rf,8);simdgroup_store(sg,rg,8);threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint i=lane;i<64;i+=32){uint t=token+i/8,r=row+i%8;if(t<p.u[4] && r<p.u[0]){uint j=t*p.u[0]+r;y[j]=(1.f-tanh(rf[i]))*x[j]+tanh(rg[i])*msg[j];}}
+}
 // Same ABI as concat_norm, with 256 threads per token for wide controller inputs.
 kernel void concat_norm_parallel(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* msg [[buffer(2)]], constant Params& p [[buffer(15)]], uint token [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
     threadgroup float pa[8],pb[8];uint n=p.u[0];if(token>=p.u[1])return;x+=token*n;msg+=token*n;y+=token*n*2;
