@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rink_core::{AutoregressiveModel, greedy};
-use rink_inkling::Inkling;
+use rink_inkling::{Inkling, KvCachePrecision};
 use rink_metal::Metal;
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Instant};
@@ -23,6 +23,7 @@ fn phase(seconds: f64, tokens: usize, device: &Metal) -> Value {
     json!({
         "seconds": seconds, "tokens": tokens, "tokens_per_second": tokens as f64 / seconds,
         "allocations": s.allocations, "allocated_bytes": s.allocated_bytes,
+        "device_allocated_bytes": device.allocated_memory(),
         "dispatches": s.dispatches, "encoders": s.encoders,
         "command_buffers": s.command_buffers, "readback_bytes": s.readback_bytes,
         "cpu_allocation_seconds": s.allocation_seconds, "cpu_encoding_seconds": s.encoding_seconds,
@@ -37,6 +38,7 @@ pub struct Options {
     pub decode: usize,
     pub repetitions: usize,
     pub context: usize,
+    pub kv_cache: KvCachePrecision,
     pub reference: bool,
     pub profile_kernels: bool,
 }
@@ -48,6 +50,7 @@ pub fn run(options: Options) -> Result<()> {
         decode,
         repetitions,
         context,
+        kv_cache,
         reference,
         profile_kernels,
     } = options;
@@ -69,7 +72,7 @@ pub fn run(options: Options) -> Result<()> {
         );
     }
     let start = Instant::now();
-    let mut model = Inkling::load(device, &directory, context)?;
+    let mut model = Inkling::load_with_kv_cache(device, &directory, context, kv_cache)?;
     let load_seconds = start.elapsed().as_secs_f64();
     let load = phase(load_seconds, 0, model.accelerator());
     // Warm the GPU and runtime separately from measured trials. Each trial starts
@@ -130,6 +133,8 @@ pub fn run(options: Options) -> Result<()> {
         "{}",
         serde_json::to_string_pretty(&json!({
             "device": model.device_name(), "context": context, "reference": reference,
+            "kv_cache": kv_cache.to_string(),
+            "recommended_memory_bytes": model.accelerator().recommended_memory(),
             "profile_kernels": profile_kernels,
             "load": load, "trials": trials,
         }))?

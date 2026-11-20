@@ -30,6 +30,7 @@ pub fn run(
     context: usize,
     effort: f32,
     show_thinking: bool,
+    kv_cache: rink_inkling::KvCachePrecision,
 ) -> Result<()> {
     let tokenizer = tokenizers::Tokenizer::from_file(directory.join("tokenizer.json"))
         .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
@@ -50,7 +51,7 @@ pub fn run(
     );
     let device = rink_metal::Metal::new()?;
     eprintln!("Loading Inkling 2 Mini on {}…", device.name());
-    let model = rink_inkling::Inkling::load(device, &directory, context)?;
+    let model = rink_inkling::Inkling::load_with_kv_cache(device, &directory, context, kv_cache)?;
     let mut session = Session::new(model, eos_token);
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
@@ -61,7 +62,7 @@ pub fn run(
     )?;
     writeln!(
         output,
-        "Context: {context} tokens; reply limit: {max_tokens}; effort: {effort}."
+        "Context: {context} tokens; reply limit: {max_tokens}; effort: {effort}; KV cache: {kv_cache}."
     )?;
     let mut line = String::new();
     let mut stream = tokenizer.decode_stream(true);

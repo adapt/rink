@@ -124,6 +124,7 @@ def message(x, m, prefix):
 
 
 histories, kv_cache = {}, {}
+fp16_cache = False
 
 
 def conv(x, prefix, visit, slot, dynamic_input=None):
@@ -165,6 +166,9 @@ def attention(inputs, i, visit, pos):
     q = clip(q, 4, .7, prefix+'.q_l2_clip.scale', tau)
     k = clip(k, 4, .7)
     v = norm(v)
+    if fp16_cache:
+        k = [struct.unpack('<e', struct.pack('<e', x))[0] for x in k]
+        v = [struct.unpack('<e', struct.pack('<e', x))[0] for x in v]
     r = clip(r, 2, .6, prefix+'.rel_l2_clip.scale', tau)
     history = kv_cache.setdefault(visit, [])
     history.append((k, v))
@@ -248,6 +252,9 @@ def step(token, pos):
     return [30*math.tanh(v/30) for v in mat('unembed.weight', hidden)[:15]]
 
 ids = [1, 3, 2, 5, 4, 1, 7]
-expected = dict(tokens=ids, logits=[step(token, pos) for pos, token in enumerate(ids)])
-(OUT / 'expected.json').write_text(json.dumps(expected, indent=2)+'\n')
+for fp16_cache, filename in [(False, 'expected.json'), (True, 'expected-f16.json')]:
+    histories.clear()
+    kv_cache.clear()
+    expected = dict(tokens=ids, logits=[step(token, pos) for pos, token in enumerate(ids)])
+    (OUT / filename).write_text(json.dumps(expected, indent=2)+'\n')
 print('Wrote', len(weights), 'tensors and', len(ids), 'reference decoding steps to', OUT)

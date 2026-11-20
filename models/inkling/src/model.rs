@@ -8,6 +8,47 @@ use rink_core::{Accelerator, AutoregressiveModel, Buffer};
 use safetensors::Dtype;
 use std::{collections::HashMap, path::Path};
 
+/// Storage precision for keys and values; attention arithmetic stays float32.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KvCachePrecision {
+    #[default]
+    F16,
+    F32,
+}
+
+impl KvCachePrecision {
+    fn bytes(self) -> usize {
+        match self {
+            Self::F16 => 2,
+            Self::F32 => 4,
+        }
+    }
+
+    fn shader_flag(self) -> usize {
+        usize::from(self == Self::F16)
+    }
+}
+
+impl std::fmt::Display for KvCachePrecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::F16 => "f16",
+            Self::F32 => "f32",
+        })
+    }
+}
+
+impl std::str::FromStr for KvCachePrecision {
+    type Err = anyhow::Error;
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "f16" => Ok(Self::F16),
+            "f32" => Ok(Self::F32),
+            _ => bail!("KV cache precision must be f16 or f32"),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Weight<B> {
     buffer: B,
@@ -50,6 +91,8 @@ pub struct Inkling<A: Accelerator> {
     weights: HashMap<String, Weight<A::Buffer>>,
     experts: Vec<ExpertPair<A::Buffer>>,
     caches: Vec<Cache<A::Buffer>>,
+    kv_cache: KvCachePrecision,
+    attention_workspace: Option<A::Buffer>,
     capacity: usize,
     position: usize,
     failed: bool,
@@ -59,7 +102,16 @@ pub struct Inkling<A: Accelerator> {
 }
 
 impl<A: Accelerator> Inkling<A> {
-    pub fn load(mut device: A, directory: &Path, capacity: usize) -> Result<Self> {
+    pub fn load(device: A, directory: &Path, capacity: usize) -> Result<Self> {
+        Self::load_with_kv_cache(device, directory, capacity, KvCachePrecision::default())
+    }
+
+    pub fn load_with_kv_cache(
+        mut device: A,
+        directory: &Path,
+        capacity: usize,
+        kv_cache: KvCachePrecision,
+    ) -> Result<Self> {
         let config = Config::load(directory.join("config.json"))?;
         ensure!(
             capacity > 0 && capacity <= config.text_config.model_max_length,
@@ -109,6 +161,8 @@ impl<A: Accelerator> Inkling<A> {
             weights,
             experts,
             caches: Vec::new(),
+            kv_cache,
+            attention_workspace: None,
             capacity,
             position: 0,
             failed: false,
@@ -146,6 +200,23 @@ impl<A: Accelerator> Inkling<A> {
     fn alloc_state(&mut self, n: usize) -> Result<A::Buffer> {
         self.device
             .allocate(n.checked_mul(4).context("buffer size overflow")?)
+    }
+
+    fn attention_workspace(&mut self, n: usize) -> Result<A::Buffer> {
+        let bytes = n
+            .checked_mul(4)
+            .context("attention workspace size overflow")?;
+        if self
+            .attention_workspace
+            .as_ref()
+            .is_none_or(|b| b.byte_len() < bytes)
+        {
+            self.attention_workspace = Some(self.device.allocate(bytes)?);
+        }
+        // Every partition buffer is consumed by attention_finish before the next
+        // layer overwrites it. The accelerator's ordered stream preserves this
+        // dependency, including across loop passes, without a CPU synchronization.
+        Ok(self.attention_workspace.as_ref().unwrap().clone())
     }
     fn w(&self, name: &str) -> A::Buffer {
         self.weights[name].buffer.clone()
@@ -573,8 +644,12 @@ impl<A: Accelerator> Inkling<A> {
             extent,
             parts,
             self.batch,
+            self.kv_cache.shader_flag(),
         ];
-        let partials = self.alloc(self.batch * qh * capacity.div_ceil(128) * (d + 2))?;
+        // Reserve for this batch at the configured capacity, avoiding reallocations
+        // as history grows. All visits share this allocation, including local layers.
+        let partials =
+            self.attention_workspace(self.batch * qh * capacity.div_ceil(128) * (d + 2))?;
         let profiles = self.w(&format!("{p}.rel_logits_proj.proj"));
         self.run(
             "attention_partition",
@@ -596,7 +671,13 @@ impl<A: Accelerator> Inkling<A> {
         self.run(
             "cache_write",
             &[&keys, &values, &k, &v],
-            &[kh * d, capacity, self.position, self.batch],
+            &[
+                kh * d,
+                capacity,
+                self.position,
+                self.batch,
+                self.kv_cache.shader_flag(),
+            ],
             &[],
             self.batch * kh * d,
             128,
@@ -1049,8 +1130,11 @@ impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
             for n in [kv, kv, c.hidden_size, c.hidden_size] {
                 conv.push(self.alloc_state(n * c.sconv_kernel_size)?);
             }
-            let keys = self.alloc_state(capacity * kv)?;
-            let values = self.alloc_state(capacity * kv)?;
+            let bytes = (capacity * kv)
+                .checked_mul(self.kv_cache.bytes())
+                .context("KV cache size overflow")?;
+            let keys = self.device.allocate(bytes)?;
+            let values = self.device.allocate(bytes)?;
             self.caches.push(Cache {
                 keys,
                 values,

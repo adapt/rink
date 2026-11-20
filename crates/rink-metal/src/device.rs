@@ -72,6 +72,10 @@ impl Metal {
     pub fn recommended_memory(&self) -> u64 {
         self.device.recommended_max_working_set_size()
     }
+    /// Current Metal allocations, including resources retained by pending commands.
+    pub fn allocated_memory(&self) -> u64 {
+        self.device.current_allocated_size()
+    }
     pub fn set_profiling(&mut self, enabled: bool) {
         self.profiling = enabled;
     }

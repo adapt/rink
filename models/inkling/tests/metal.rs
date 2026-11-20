@@ -1,13 +1,26 @@
 #![cfg(target_os = "macos")]
 use rink_core::{Accelerator, AutoregressiveModel};
 use rink_inkling::{
-    Inkling,
+    Inkling, KvCachePrecision,
     kernels::{Kernels, Params},
 };
 use rink_metal::{Metal, MetalBuffer};
 
 fn upload(d: &mut Metal, values: &[f32]) -> MetalBuffer {
     d.upload(bytemuck::cast_slice(values)).unwrap()
+}
+fn upload_cache(d: &mut Metal, values: &[f32], fp16: bool) -> MetalBuffer {
+    if fp16 {
+        d.upload(
+            &values
+                .iter()
+                .flat_map(|&v| half::f16::from_f32(v).to_bits().to_le_bytes())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    } else {
+        upload(d, values)
+    }
 }
 fn read(d: &mut Metal, b: &MetalBuffer) -> Vec<f32> {
     d.read(b)
@@ -661,31 +674,39 @@ fn tiny_decoder_matches_scalar_reference_and_reset() {
         tokens: Vec<u32>,
         logits: Vec<Vec<f32>>,
     }
-    let e: Expected = serde_json::from_str(include_str!("fixtures/tiny/expected.json")).unwrap();
-    let mut model = Inkling::load(Metal::new().unwrap(), &path, e.tokens.len()).unwrap();
-    let mut allocations = 0;
-    for (i, (&id, expected)) in e.tokens.iter().zip(&e.logits).enumerate() {
-        close(&model.step(id).unwrap(), expected, 0.0002);
-        if i == 0 {
-            allocations = model.accelerator().stats().allocations;
+    for precision in [KvCachePrecision::F32, KvCachePrecision::F16] {
+        let e: Expected = serde_json::from_str(match precision {
+            KvCachePrecision::F32 => include_str!("fixtures/tiny/expected.json"),
+            KvCachePrecision::F16 => include_str!("fixtures/tiny/expected-f16.json"),
+        })
+        .unwrap();
+        let mut model =
+            Inkling::load_with_kv_cache(Metal::new().unwrap(), &path, e.tokens.len(), precision)
+                .unwrap();
+        let mut allocations = 0;
+        for (i, (&id, expected)) in e.tokens.iter().zip(&e.logits).enumerate() {
+            close(&model.step(id).unwrap(), expected, 0.0002);
+            if i == 0 {
+                allocations = model.accelerator().stats().allocations;
+            }
+            assert_eq!(
+                model.accelerator().stats().allocations,
+                allocations,
+                "scratch should be reused after the first token"
+            );
         }
+        assert_eq!(model.position(), e.tokens.len());
+        assert!(model.step(1).is_err());
+        model.reset().unwrap();
         assert_eq!(
             model.accelerator().stats().allocations,
             allocations,
-            "scratch should be reused after the first token"
+            "reset should reuse cache allocations"
         );
+        assert_eq!(model.position(), 0);
+        assert!(model.step(15).is_err());
+        close(&model.step(e.tokens[0]).unwrap(), &e.logits[0], 0.0002);
     }
-    assert_eq!(model.position(), e.tokens.len());
-    assert!(model.step(1).is_err());
-    model.reset().unwrap();
-    assert_eq!(
-        model.accelerator().stats().allocations,
-        allocations,
-        "reset should reuse cache allocations"
-    );
-    assert_eq!(model.position(), 0);
-    assert!(model.step(15).is_err());
-    close(&model.step(e.tokens[0]).unwrap(), &e.logits[0], 0.0002);
 }
 
 #[test]
@@ -883,7 +904,7 @@ fn matvec_handles_bfloat16_and_non_aligned_dimensions() {
 fn prefill_and_gpu_sampling_match_scalar_reference_across_reset() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny");
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/tiny/expected.json")).unwrap();
+        serde_json::from_str(include_str!("fixtures/tiny/expected-f16.json")).unwrap();
     let tokens: Vec<u32> = serde_json::from_value(expected["tokens"].clone()).unwrap();
     let logits: Vec<Vec<f32>> = serde_json::from_value(expected["logits"].clone()).unwrap();
     let mut model = Inkling::load(Metal::new().unwrap(), &path, tokens.len()).unwrap();
@@ -1002,116 +1023,230 @@ fn vectorized_dense_projection_handles_row_and_column_tiles() {
 fn partitioned_attention_matches_scalar_with_tails_ring_and_causal_chunks() {
     let mut device = Metal::new().unwrap();
     let kernels = Kernels::compile(&mut device).unwrap();
-    let (qh, kh, dim, rel_dim, extent) = (6, 2, 40, 4, 64);
-    for (position, capacity, batch) in [(513, 257, 1), (126, 257, 5), (600, 257, 7)] {
-        let vals = |n: usize, phase: f32| -> Vec<f32> {
-            (0..n)
-                .map(|i| (i as f32 * 0.017 + phase).sin() * 0.3)
-                .collect()
+    for fp16 in [false, true] {
+        let round = |x| {
+            if fp16 {
+                half::f16::from_f32(x).to_f32()
+            } else {
+                x
+            }
         };
-        let q = vals(batch * qh * dim, 0.1);
-        let keys = vals(capacity * kh * dim, 0.2);
-        let values = vals(capacity * kh * dim, 0.3);
-        let new_keys = vals(batch * kh * dim, 0.8);
-        let new_values = vals(batch * kh * dim, 0.9);
-        let rel = vals(batch * qh * rel_dim, 0.4);
-        let profiles = vals(rel_dim * extent, 0.5);
-        let sinks = vals(batch * qh, 0.6);
-        let gate = vals(batch * qh * dim, 0.7);
-        let buffers: Vec<_> = [
-            &q,
-            &keys,
-            &values,
-            &new_keys,
-            &new_values,
-            &rel,
-            &profiles,
-            &sinks,
-            &gate,
-        ]
-        .iter()
-        .map(|v| upload(&mut device, v))
-        .collect();
-        let n = (position + batch).min(capacity);
-        let parts = n.div_ceil(128);
-        let partial = device.allocate(batch * qh * parts * (dim + 2) * 4).unwrap();
-        let out = device.allocate(batch * qh * dim * 4).unwrap();
-        let geometry = [
-            qh, kh, dim, position, capacity, n, rel_dim, extent, parts, batch,
-        ];
-        // SAFETY: all heads/partitions and new-token arrays match the declared geometry.
-        unsafe {
-            kernels
-                .run(
-                    &mut device,
-                    "attention_partition",
-                    &[
-                        &partial,
-                        &buffers[0],
-                        &buffers[1],
-                        &buffers[2],
-                        &buffers[3],
-                        &buffers[4],
-                        &buffers[5],
-                        &buffers[6],
-                    ],
-                    Params::new(&geometry, &[]),
-                    batch * qh * parts * 128,
-                    128,
-                )
-                .unwrap();
-            kernels
-                .run(
-                    &mut device,
-                    "attention_finish",
-                    &[&out, &partial, &buffers[7], &buffers[8]],
-                    Params::new(&geometry, &[]),
-                    batch * qh * 32,
-                    32,
-                )
-                .unwrap();
-        }
-        let mut expected = Vec::new();
-        for token in 0..batch {
-            let pos = position + token;
-            let visible = (pos + 1).min(capacity);
-            for head in 0..qh {
-                let query = token * qh + head;
-                let kv_head = head / (qh / kh);
-                let mut scores = Vec::new();
-                for kp in pos + 1 - visible..=pos {
-                    let key = if kp >= position {
-                        &new_keys[((kp - position) * kh + kv_head) * dim..]
-                    } else {
-                        &keys[((kp % capacity) * kh + kv_head) * dim..]
-                    };
-                    let mut score: f32 = (0..dim).map(|i| q[query * dim + i] * key[i]).sum::<f32>()
-                        / (dim as f32).sqrt();
-                    if pos - kp < extent {
-                        score += (0..rel_dim)
-                            .map(|i| rel[query * rel_dim + i] * profiles[i * extent + pos - kp])
-                            .sum::<f32>();
-                    }
-                    scores.push(score);
+        for (position, capacity, batch) in [
+            (0, 257, 1),
+            (513, 257, 1),
+            (126, 257, 5),
+            (600, 257, 7),
+            (8191, 8192, 1),
+            (65535, 65536, 1),
+            (262143, 262144, 1),
+        ] {
+            let (qh, kh, dim, rel_dim, extent) = if capacity > 257 {
+                (3, 1, 8, 4, 64)
+            } else {
+                (6, 2, 40, 4, 64)
+            };
+            let vals = |n: usize, phase: f32| -> Vec<f32> {
+                (0..n)
+                    .map(|i| (i as f32 * 0.017 + phase).sin() * 0.3)
+                    .collect()
+            };
+            let q = vals(batch * qh * dim, 0.1);
+            let keys = vals(capacity * kh * dim, 0.2);
+            let values = vals(capacity * kh * dim, 0.3);
+            let new_keys = vals(batch * kh * dim, 0.8);
+            let new_values = vals(batch * kh * dim, 0.9);
+            let rel = vals(batch * qh * rel_dim, 0.4);
+            let profiles = vals(rel_dim * extent, 0.5);
+            let sinks = vals(batch * qh, 0.6);
+            let gate = vals(batch * qh * dim, 0.7);
+            let buffers: Vec<_> = [
+                &q,
+                &keys,
+                &values,
+                &new_keys,
+                &new_values,
+                &rel,
+                &profiles,
+                &sinks,
+                &gate,
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                if i == 1 || i == 2 {
+                    upload_cache(&mut device, v, fp16)
+                } else {
+                    upload(&mut device, v)
                 }
-                let maximum = scores.iter().copied().fold(sinks[query], f32::max);
-                let weights: Vec<f32> = scores.iter().map(|s| (s - maximum).exp()).collect();
-                let denominator = weights.iter().sum::<f32>() + (sinks[query] - maximum).exp();
-                for i in 0..dim {
-                    let mut sum = 0.;
-                    for (j, kp) in (pos + 1 - visible..=pos).enumerate() {
-                        let value = if kp >= position {
-                            new_values[((kp - position) * kh + kv_head) * dim + i]
+            })
+            .collect();
+            let n = (position + batch).min(capacity);
+            let parts = n.div_ceil(128);
+            let partial = device.allocate(batch * qh * parts * (dim + 2) * 4).unwrap();
+            let out = device.allocate(batch * qh * dim * 4).unwrap();
+            let geometry = [
+                qh,
+                kh,
+                dim,
+                position,
+                capacity,
+                n,
+                rel_dim,
+                extent,
+                parts,
+                batch,
+                usize::from(fp16),
+            ];
+            // SAFETY: all heads/partitions and new-token arrays match the declared geometry.
+            unsafe {
+                kernels
+                    .run(
+                        &mut device,
+                        "attention_partition",
+                        &[
+                            &partial,
+                            &buffers[0],
+                            &buffers[1],
+                            &buffers[2],
+                            &buffers[3],
+                            &buffers[4],
+                            &buffers[5],
+                            &buffers[6],
+                        ],
+                        Params::new(&geometry, &[]),
+                        batch * qh * parts * 128,
+                        128,
+                    )
+                    .unwrap();
+                kernels
+                    .run(
+                        &mut device,
+                        "attention_finish",
+                        &[&out, &partial, &buffers[7], &buffers[8]],
+                        Params::new(&geometry, &[]),
+                        batch * qh * 32,
+                        32,
+                    )
+                    .unwrap();
+            }
+            let mut expected = Vec::new();
+            for token in 0..batch {
+                let pos = position + token;
+                let visible = (pos + 1).min(capacity);
+                for head in 0..qh {
+                    let query = token * qh + head;
+                    let kv_head = head / (qh / kh);
+                    let mut scores = Vec::new();
+                    for kp in pos + 1 - visible..=pos {
+                        let key = if kp >= position {
+                            &new_keys[((kp - position) * kh + kv_head) * dim..]
                         } else {
-                            values[((kp % capacity) * kh + kv_head) * dim + i]
+                            &keys[((kp % capacity) * kh + kv_head) * dim..]
                         };
-                        sum += weights[j] * value;
+                        let mut score: f32 = (0..dim)
+                            .map(|i| q[query * dim + i] * round(key[i]))
+                            .sum::<f32>()
+                            / (dim as f32).sqrt();
+                        if pos - kp < extent {
+                            score += (0..rel_dim)
+                                .map(|i| rel[query * rel_dim + i] * profiles[i * extent + pos - kp])
+                                .sum::<f32>();
+                        }
+                        scores.push(score);
                     }
-                    expected.push(sum / denominator / (1. + (-gate[query * dim + i]).exp()));
+                    let maximum = scores.iter().copied().fold(sinks[query], f32::max);
+                    let weights: Vec<f32> = scores.iter().map(|s| (s - maximum).exp()).collect();
+                    let denominator = weights.iter().sum::<f32>() + (sinks[query] - maximum).exp();
+                    for i in 0..dim {
+                        let mut sum = 0.;
+                        for (j, kp) in (pos + 1 - visible..=pos).enumerate() {
+                            let value = if kp >= position {
+                                new_values[((kp - position) * kh + kv_head) * dim + i]
+                            } else {
+                                values[((kp % capacity) * kh + kv_head) * dim + i]
+                            };
+                            sum += weights[j] * round(value);
+                        }
+                        expected.push(sum / denominator / (1. + (-gate[query * dim + i]).exp()));
+                    }
                 }
             }
+            close(&read(&mut device, &out), &expected, 0.00001);
         }
-        close(&read(&mut device, &out), &expected, 0.00001);
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn kv_cache_writes_round_and_preserve_ring_guards_at_long_positions() {
+    let mut device = Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut device).unwrap();
+    for fp16 in [false, true] {
+        let round = |x| {
+            if fp16 {
+                half::f16::from_f32(x).to_f32()
+            } else {
+                x
+            }
+        };
+        for (capacity, position, batch) in
+            [(3, 0, 1), (3, 2, 7), (257, 262111, 33), (257, 1048574, 2)]
+        {
+            let channels = 17;
+            let len = capacity * channels;
+            let mut expected = vec![-13.375; len + 19];
+            let keys = upload_cache(&mut device, &expected, fp16);
+            let values = upload_cache(&mut device, &expected, fp16);
+            let input: Vec<_> = (0..batch * channels)
+                .map(|i| (i as f32 * 0.41).sin() * 7.)
+                .collect();
+            let k = upload(&mut device, &input);
+            let v = upload(&mut device, &input.iter().map(|x| -x).collect::<Vec<_>>());
+            // SAFETY: the ring and fresh rows match the ABI, with extra sentinel
+            // elements beyond the logical cache. Oversized chunks write each slot once.
+            unsafe {
+                kernels
+                    .run(
+                        &mut device,
+                        "cache_write",
+                        &[&keys, &values, &k, &v],
+                        Params::new(
+                            &[channels, capacity, position, batch, usize::from(fp16)],
+                            &[],
+                        ),
+                        batch * channels,
+                        128,
+                    )
+                    .unwrap();
+            }
+            for token in batch.saturating_sub(capacity)..batch {
+                for channel in 0..channels {
+                    expected[((position + token) % capacity) * channels + channel] =
+                        round(input[token * channels + channel]);
+                }
+            }
+            let read_cache = |d: &mut Metal, b: &MetalBuffer| -> Vec<f32> {
+                if fp16 {
+                    d.read(b)
+                        .unwrap()
+                        .chunks_exact(2)
+                        .map(|b| {
+                            half::f16::from_bits(u16::from_le_bytes(b.try_into().unwrap())).to_f32()
+                        })
+                        .collect()
+                } else {
+                    read(d, b)
+                }
+            };
+            assert_eq!(read_cache(&mut device, &keys), expected);
+            for token in batch.saturating_sub(capacity)..batch {
+                for channel in 0..channels {
+                    expected[((position + token) % capacity) * channels + channel] =
+                        round(-input[token * channels + channel]);
+                }
+            }
+            assert_eq!(read_cache(&mut device, &values), expected);
+        }
     }
 }
 
@@ -1209,5 +1344,69 @@ fn batched_prefill_matches_token_steps_across_chunk_boundaries() {
             rink_core::greedy(&model.step(3).unwrap()).unwrap()
         });
     }
+    std::fs::remove_dir_all(temporary).unwrap();
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn large_context_shares_attention_workspace_and_reuses_it_after_reset() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny");
+    let temporary = std::env::temp_dir().join(format!("rink-cache-memory-{}", std::process::id()));
+    std::fs::create_dir_all(&temporary).unwrap();
+    let mut config = rink_inkling::Config::load(fixture.join("config.json")).unwrap();
+    config.text_config.model_max_length = 262144;
+    std::fs::write(
+        temporary.join("config.json"),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixture.join("model.safetensors"),
+        temporary.join("model.safetensors"),
+    )
+    .unwrap();
+    let c = &config.text_config;
+    let tokens: Vec<_> = (0..32).map(|i| (i * 7 % 14) as u32).collect();
+    let mut measurements = Vec::new();
+    let mut expected: Option<Vec<f32>> = None;
+    for capacity in [128, 262144] {
+        let mut model = Inkling::load(Metal::new().unwrap(), &temporary, capacity).unwrap();
+        let loaded = model.accelerator().stats().allocated_bytes;
+        model.accelerator_mut().reset_stats();
+        let logits = model.prefill(&tokens).unwrap();
+        let scratch = model.accelerator().stats().allocated_bytes;
+        if let Some(expected) = &expected {
+            close(&logits, expected, 0.00001);
+        } else {
+            expected = Some(logits);
+        }
+        let allocations = model.accelerator().stats().allocations;
+        model.prefill(&tokens).unwrap();
+        model.step(2).unwrap();
+        model.reset().unwrap();
+        close(
+            &model.prefill(&tokens).unwrap(),
+            expected.as_ref().unwrap(),
+            0.00001,
+        );
+        assert_eq!(
+            model.accelerator().stats().allocations,
+            allocations + 2,
+            "only the two new prompt-token uploads should allocate"
+        );
+        measurements.push((loaded, scratch));
+    }
+    let full_visits = c.schedule().iter().filter(|v| !c.is_local(v.layer)).count();
+    // Growing the context changes only the full-attention caches, at two bytes
+    // per key/value element. Looped visits still have independent history.
+    assert_eq!(
+        measurements[1].0 - measurements[0].0,
+        (full_visits * (262144 - 128) * c.num_key_value_heads * c.head_dim * 2 * 2) as u64
+    );
+    let largest_workspace = 32 * c.num_attention_heads * (262144 / 128) * (c.head_dim + 2) * 4;
+    assert!(
+        measurements[1].1 - measurements[0].1 <= largest_workspace as u64,
+        "attention workspace must scale with the largest layer, not the number of visits"
+    );
     std::fs::remove_dir_all(temporary).unwrap();
 }

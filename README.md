@@ -15,13 +15,17 @@ normalizations run in parallel, and controller projections are fused with gating
 During decoding, expert gate/up projections include SwiGLU, and convolution
 updates incorporate expert summation and residual additions.
 Scratch buffers and conversation caches are reused, and greedy sampling runs on the
-GPU. Activations and caches use float32. Image input, CUDA execution, speculative
-decoding, and batching across requests are follow-up work.
+GPU. KV caches use float16 by default; activations, convolution history, and attention
+accumulation use float32. Attention shares one temporary workspace across all layer
+visits. Image input, CUDA execution, speculative decoding, and batching across
+requests are follow-up work.
 
 ## Run
 
 Use a Rust toolchain supporting edition 2024 and macOS with a Metal-capable Apple GPU.
-The original checkpoint is about 19.5 GB; 32 GB or more unified memory is recommended.
+The original checkpoint is about 19.5 GB. The default 256K chat context targets Macs
+with 48 GB or more unified memory; on a 32 GB Mac, use a smaller `--context`, such as
+`4096`.
 Cache memory depends on the requested context. Metal allocations are bounded by the
 device's recommended working set, so the model's advertised 1M-token context is not
 a promise that that context fits on a particular Mac.
@@ -53,10 +57,20 @@ sending another message. Protocol markers are hidden; add `--show-thinking` to s
 the reasoning as well as the answer.
 
 Chat defaults to `--model checkpoints/inkling-2-mini --effort 0.9 --max-tokens 512
---context 4096`. The token limit includes reasoning and protocol tokens; the context
-limit covers the entire conversation. A new message must leave room for the reply
+--context 262144 --kv-cache f16`. The token limit includes reasoning and protocol
+tokens; the context limit covers the entire conversation. A new message must leave room for the reply
 budget. When the context fills, use `/reset` or restart with a larger `--context`.
 History is kept in memory and is not saved to disk.
+
+`chat`, `generate`, and `bench` accept `--kv-cache f16` (default) or `--kv-cache f32`
+for precision comparisons. Both cached and newly projected keys/values are rounded
+to the selected storage precision before attention, consistently across prompt
+chunks and decoding. At 256K, the FP16 KV cache uses about 8.16 GiB; the shared
+32-token attention workspace uses at most 780 MiB for this model. Weights and other
+scratch buffers require additional memory. Cache capacity is allocated at load time;
+attention workspace grows when a larger prompt batch is first used and is then reused.
+`generate` and `bench` retain their smaller context defaults; pass `--context 262144`
+explicitly when using them to test the chat capacity.
 
 `generate` renders the released single-user-message chat format and stops at EOS.
 It leaves protocol markers visible, including thinking and answer boundaries.
@@ -156,6 +170,10 @@ input/output reordering. Batched prefill is compared against single-token execut
 across chunk boundaries, sliding-window wraparound, reset, and subsequent decoding.
 Fused expert activation is compared against separate projection and SwiGLU kernels;
 fused residual convolutions verify both outputs and history across chunks and resets.
+FP16 and FP32 caches have independent scalar decoder references. Cache tests cover
+rounding, ring writes, memory guards, and attention at 8K, 64K, and 256K positions;
+a memory test checks that workspace grows with the largest layer rather than the
+number of layer visits, and is reused across chunks, decoding, and reset.
 Regenerate the fixtures with
 `python3 scripts/make_test_fixture.py` (standard library only).
 Chat session tests cover exact token history across turns, EOS, continuation, reset,

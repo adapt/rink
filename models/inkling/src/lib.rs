@@ -4,7 +4,7 @@ pub mod config;
 pub mod kernels;
 pub mod model;
 pub use config::Config;
-pub use model::Inkling;
+pub use model::{Inkling, KvCachePrecision};
 
 /// Single user-turn subset of the released chat template (no generation suffix).
 pub fn chat_prompt(prompt: &str, effort: f32) -> rink_core::Result<String> {

@@ -191,9 +191,12 @@ kernel void residual_convolution(device float* y [[buffer(0)]], device const flo
     }
 }
 // Commit only the last cache-capacity entries after attention reads the old ring.
-kernel void cache_write(device float* keys [[buffer(0)]], device float* values [[buffer(1)]], device const float* k [[buffer(2)]], device const float* v [[buffer(3)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) {
+// Geometry: channels, capacity, base position, batch, FP16 storage flag.
+kernel void cache_write(device uchar* keys [[buffer(0)]], device uchar* values [[buffer(1)]], device const float* k [[buffer(2)]], device const float* v [[buffer(3)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) {
     uint token=i/p.u[0],c=i%p.u[0];if(token>=p.u[3] || token+p.u[1]<p.u[3])return;
-    uint dest=((p.u[2]+token)%p.u[1])*p.u[0]+c;keys[dest]=k[i];values[dest]=v[i];
+    uint dest=((p.u[2]+token)%p.u[1])*p.u[0]+c;
+    if(p.u[4]){((device half*)keys)[dest]=half(k[i]);((device half*)values)[dest]=half(v[i]);}
+    else {((device float*)keys)[dest]=k[i];((device float*)values)[dest]=v[i];}
 }
 // q_heads, kv_heads, head_dim, position, cache_capacity, visible_len, d_rel, rel_extent.
 // One SIMD group per (head,key); KV cache is token-major with ring addressing.
@@ -340,8 +343,15 @@ kernel void softcap(device float* y [[buffer(0)]], device const float* x [[buffe
 struct Choice { float value; uint index; uint invalid; };
 // 128 keys per partition, four SIMD groups per threadgroup. Compute softmax
 // weights once per key and retain only a partial weighted value plus max/sum.
-// Geometry: q_heads,kv_heads,dim,base_position,capacity,visible,d_rel,extent,parts,batch.
-kernel void attention_partition(device float* out [[buffer(0)]], device const float* q [[buffer(1)]], device const float* keys [[buffer(2)]], device const float* values [[buffer(3)]], device const float* new_keys [[buffer(4)]], device const float* new_values [[buffer(5)]], device const float* rel [[buffer(6)]], device const float* profiles [[buffer(7)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+// Read fresh and cached values at the same precision so changing prompt chunk
+// boundaries cannot change where FP16 rounding occurs. Dot products, softmax,
+// partition sums and final reductions all remain float32.
+inline float kv_read(device const uchar* cache, device const float* fresh, uint index, bool is_new, bool fp16) {
+    if(is_new){float x=fresh[index];return fp16?float(half(x)):x;}
+    return fp16?float(((device const half*)cache)[index]):((device const float*)cache)[index];
+}
+// Geometry: q_heads,kv_heads,dim,base_position,capacity,visible,d_rel,extent,parts,batch,FP16.
+kernel void attention_partition(device float* out [[buffer(0)]], device const float* q [[buffer(1)]], device const uchar* keys [[buffer(2)]], device const uchar* values [[buffer(3)]], device const float* new_keys [[buffer(4)]], device const float* new_values [[buffer(5)]], device const float* rel [[buffer(6)]], device const float* profiles [[buffer(7)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
     threadgroup float scores[128], maxima[4], totals[4];
     uint parts=p.u[8], query=group/parts, part=group%parts, h=query%p.u[0], token=query/p.u[0], d=p.u[2];
     uint pos=p.u[3]+token,n=min(pos+1,p.u[4]),start=part*128,kh=h/(p.u[0]/p.u[1]),sg=tid/32;
@@ -349,8 +359,8 @@ kernel void attention_partition(device float* out [[buffer(0)]], device const fl
     if(start>=n){if(tid==0){out[dest]=-INFINITY;out[dest+1]=0;}for(uint i=tid;i<d;i+=128)out[dest+2+i]=0;return;}
     for(uint j=sg;j<128;j+=4){uint at=start+j;float score=-INFINITY;
         if(at<n){uint kp=pos+1-n+at,dist=pos-kp;
-            device const float* key=kp>=p.u[3]?new_keys+((kp-p.u[3])*p.u[1]+kh)*d:keys+((kp%p.u[4])*p.u[1]+kh)*d;
-            float dot=0;for(uint i=lane;i<d;i+=32)dot+=q[query*d+i]*key[i];score=simd_sum(dot)*rsqrt(float(d));
+            bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:kp%p.u[4])*p.u[1]+kh)*d;
+            float dot=0;for(uint i=lane;i<d;i+=32)dot+=q[query*d+i]*kv_read(keys,new_keys,offset+i,fresh,p.u[10]);score=simd_sum(dot)*rsqrt(float(d));
             float bias=0;if(dist<p.u[7])for(uint i=lane;i<p.u[6];i+=32)bias+=rel[query*p.u[6]+i]*profiles[i*p.u[7]+dist];score+=simd_sum(bias);
         }
         if(lane==0)scores[j]=score;
@@ -363,8 +373,8 @@ kernel void attention_partition(device float* out [[buffer(0)]], device const fl
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if(tid==0){out[dest]=mx;out[dest+1]=totals[0]+totals[1]+totals[2]+totals[3];}
     for(uint i=tid;i<d;i+=128){float sum=0;for(uint j=0;j<min(128u,n-start);j++){uint kp=pos+1-n+start+j;
-        device const float* value=kp>=p.u[3]?new_values+((kp-p.u[3])*p.u[1]+kh)*d:values+((kp%p.u[4])*p.u[1]+kh)*d;
-        sum+=scores[j]*value[i];}out[dest+2+i]=sum;}
+        bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:kp%p.u[4])*p.u[1]+kh)*d;
+        sum+=scores[j]*kv_read(values,new_values,offset+i,fresh,p.u[10]);}out[dest+2+i]=sum;}
 }
 kernel void attention_finish(device float* y [[buffer(0)]], device const float* parts [[buffer(1)]], device const float* sinks [[buffer(2)]], device const float* gate [[buffer(3)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint query=t/32,d=p.u[2],n=p.u[8];if(query>=p.u[0]*p.u[9])return;

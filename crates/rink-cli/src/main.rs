@@ -1,5 +1,6 @@
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
+use rink_inkling::KvCachePrecision;
 use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
@@ -33,6 +34,9 @@ enum Command {
         repetitions: usize,
         #[arg(long, default_value_t = 4096)]
         context: usize,
+        /// KV-cache storage precision: f16 or f32; attention accumulates in f32.
+        #[arg(long, default_value = "f16")]
+        kv_cache: KvCachePrecision,
         /// Force single-token prefill and CPU sampling for comparison.
         #[arg(long)]
         reference: bool,
@@ -53,8 +57,11 @@ enum Command {
         #[arg(long, default_value_t = 512)]
         max_tokens: usize,
         /// Maximum cached sequence length across the entire conversation.
-        #[arg(long, default_value_t = 4096)]
+        #[arg(long, default_value_t = 262144)]
         context: usize,
+        /// KV-cache storage precision: f16 or f32; attention accumulates in f32.
+        #[arg(long, default_value = "f16")]
+        kv_cache: KvCachePrecision,
         /// Chat reasoning effort, between 0 and 0.99.
         #[arg(long, default_value_t = 0.9)]
         effort: f32,
@@ -73,6 +80,9 @@ enum Command {
         /// Maximum cached sequence length (prompt plus generation).
         #[arg(long, default_value_t = 2048)]
         context: usize,
+        /// KV-cache storage precision: f16 or f32; attention accumulates in f32.
+        #[arg(long, default_value = "f16")]
+        kv_cache: KvCachePrecision,
         /// Pass an already rendered prompt directly to the tokenizer.
         #[arg(long)]
         raw: bool,
@@ -89,6 +99,7 @@ fn main() -> Result<()> {
             decode_tokens,
             repetitions,
             context,
+            kv_cache,
             reference,
             profile_kernels,
         } => {
@@ -112,13 +123,14 @@ fn main() -> Result<()> {
                     decode: decode_tokens,
                     repetitions,
                     context,
+                    kv_cache,
                     reference,
                     profile_kernels,
                 })
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (model, reference, profile_kernels);
+                let _ = (model, kv_cache, reference, profile_kernels);
                 anyhow::bail!("benchmark requires macOS with Metal")
             }
         }
@@ -152,6 +164,7 @@ fn main() -> Result<()> {
             prompt,
             max_tokens,
             context,
+            kv_cache,
             raw,
             effort,
         } => {
@@ -160,12 +173,13 @@ fn main() -> Result<()> {
                 effort.is_finite() && (0.0..=0.99).contains(&effort),
                 "--effort must be in 0..=0.99"
             );
-            generate(model, prompt, max_tokens, context, raw, effort)
+            generate(model, prompt, max_tokens, context, raw, effort, kv_cache)
         }
         Command::Chat {
             model,
             max_tokens,
             context,
+            kv_cache,
             effort,
             show_thinking,
         } => {
@@ -180,11 +194,11 @@ fn main() -> Result<()> {
             );
             #[cfg(target_os = "macos")]
             {
-                chat::run(model, max_tokens, context, effort, show_thinking)
+                chat::run(model, max_tokens, context, effort, show_thinking, kv_cache)
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (model, show_thinking);
+                let _ = (model, show_thinking, kv_cache);
                 anyhow::bail!("chat requires macOS with Metal; CUDA is not implemented yet")
             }
         }
@@ -192,7 +206,15 @@ fn main() -> Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn generate(_: PathBuf, _: String, _: usize, _: usize, _: bool, _: f32) -> Result<()> {
+fn generate(
+    _: PathBuf,
+    _: String,
+    _: usize,
+    _: usize,
+    _: bool,
+    _: f32,
+    _: KvCachePrecision,
+) -> Result<()> {
     anyhow::bail!("this build supports generation on macOS with Metal; CUDA is not implemented yet")
 }
 
@@ -204,6 +226,7 @@ fn generate(
     context: usize,
     raw: bool,
     effort: f32,
+    kv_cache: KvCachePrecision,
 ) -> Result<()> {
     use anyhow::Context;
     use rink_core::{Accelerator, AutoregressiveModel};
@@ -238,7 +261,8 @@ fn generate(
         device.name(),
         device.recommended_memory() as f64 / (1u64 << 30) as f64
     );
-    let mut model = rink_inkling::Inkling::load(device, &directory, context)?;
+    let mut model =
+        rink_inkling::Inkling::load_with_kv_cache(device, &directory, context, kv_cache)?;
     eprintln!("Prefilling {} tokens", tokens.len());
     let start = Instant::now();
     let mut next = model.prefill_greedy(tokens).context("prefilling prompt")?;
