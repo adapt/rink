@@ -10,10 +10,11 @@ native NVFP4 and MXFP8 expert weights, the three-pass loop, independent KV and
 convolution state per layer visit, attention residuals, cross-pass message gates,
 local/global relative attention, and top-8 routing. The single-sequence decoder
 processes prompts in batches of up to 32 tokens using SIMD matrix multiplication,
-vectorized weight decoding, and tiled attention. Scratch buffers and conversation
-caches are reused, and greedy sampling runs on the GPU. Activations and caches use
-float32. Image input, CUDA execution, speculative decoding, and batching across
-requests are follow-up work.
+grouped native-quantized expert projections, and tiled attention. Routing and wide
+normalizations run in parallel, and controller projections are fused with gating.
+Scratch buffers and conversation caches are reused, and greedy sampling runs on the
+GPU. Activations and caches use float32. Image input, CUDA execution, speculative
+decoding, and batching across requests are follow-up work.
 
 ## Run
 
@@ -146,7 +147,10 @@ components, three loop passes, separate pass state, full and sliding attention,
 cache wraparound, reset, log scaling, vocabulary padding, and context bounds. Kernel
 tests separately cover native FP4/FP8 decoding, BF16 matrix multiplication, partial
 SIMD tiles, partitioned causal attention, GPU argmax, and biased top-k selection with
-unbiased mixture weights. Batched prefill is compared against single-token execution
+unbiased mixture weights. Further tests cover routing ties and nonfinite inputs,
+wide normalization, fused controllers with mixed weight formats, and grouped
+FP4/FP8/float32 experts with empty expert groups, sparse routes, partial tiles, and
+input/output reordering. Batched prefill is compared against single-token execution
 across chunk boundaries, sliding-window wraparound, reset, and subsequent decoding.
 Regenerate the fixtures with
 `python3 scripts/make_test_fixture.py` (standard library only).

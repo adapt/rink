@@ -47,6 +47,72 @@ in these two runs; the earlier recorded runs took 33–34 seconds. File-cache an
 shader-cache state were not controlled, so these do not establish a loading-time
 improvement. Loading is excluded from the throughput figures.
 
+## Routing, controllers, and grouped experts
+
+The follow-up pass makes three changes while retaining native FP4/FP8 checkpoint
+storage and float32 activations:
+
+- Routing uses a SIMD group per token, with stable lowest-index ties and unbiased
+  mixture weights. Wide RMS normalization and controller-input normalization use
+  256 threads; small rows retain the single-SIMD path.
+- Controller forget/gain projections and gating execute in one kernel, using
+  vector products for decoding and matrix tiles for prefill. This removes 192
+  dispatches per decode token (2,113 to 1,921). Its isolated throughput measurements
+  were roughly unchanged; the dispatch reduction alone is not a measured speedup.
+- For prompt chunks of at least eight tokens, GPU kernels compact routing slots
+  by expert, build nonempty eight-token tiles, gather inputs, and scatter the
+  matrix results back into their original slots. Up/down projections reuse that
+  grouping. Smaller chunks and single-token decoding keep vector products. There
+  is no CPU routing readback or persistent dequantized copy of the expert weights.
+
+Fresh before/after medians on the same M4 Max and checkpoint:
+
+| Prompt tokens | Before prompt tok/s | After prompt tok/s | Before decode tok/s | After decode tok/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 73.4 | 100.8 | 20.4 | 24.7 |
+| 128 | 72.9 | 101.1 | 19.4 | 22.9 |
+| 1,024 | — | 92.6 | — | 23.1 |
+
+Prompt processing improves by 37–39%, and decoding by 18–21%, at the two freshly
+paired lengths. No fresh before measurement was taken at 1,024 tokens. Routing
+and normalization account for the measured decode improvement; grouped expert
+projections account for the prefill improvement.
+
+The short-chunk comparison isolates grouping against the already-fused controller
+version. Median prefill throughput is effectively unchanged at eight tokens
+(33.8 to 33.7 tok/s), improves from 54.6 to 60.8 tok/s at 16 tokens, and from 68.5
+to 85.3 tok/s at 24 tokens. These results support the eight-token threshold on this
+checkpoint and machine; other workloads and GPUs may favor a different threshold.
+
+Raw measurements and source revisions:
+
+- [Before this pass](m4-max-followup-before.json): `020acbe`, three trials.
+- [Routing and normalization](m4-max-followup-reductions.json): `c6b847f`, two trials.
+- [Controller fusion](m4-max-followup-controllers.json): `cc786d8`, two trials.
+- [Short-chunk comparison before grouping](m4-max-followup-short-before.json):
+  `cc786d8`, three trials.
+- [Final measurements](m4-max-followup-final.json): `fb2eed6`, three trials at each
+  of six prompt lengths, including a guard for nonfinite routing inputs.
+
+All runs use 16 decode tokens and context 4,096 with profiling disabled. The first
+trial at a larger chunk size includes scratch allocation; no trials are removed.
+Only two trials were taken for the intermediate stages, so their 32-token prefill
+medians mix allocation and reuse. The before/after comparison uses three trials.
+
+All 288 generated token IDs in the final 18 trials match the previous recorded
+outputs at their respective prompt lengths. Decode reads back eight bytes and
+dispatches 1,921 kernels per token. The first decode trial grows one 2,352-byte
+scratch buffer; every subsequent decode trial and every reset allocates no GPU
+buffers. These counters and cold allocation costs are retained in the raw results.
+
+The 27-test suite covers finite and nonfinite routing, stable ties, normalization
+tails and zero rows, fused controller weight formats and tile boundaries, grouped
+FP4/FP8/float32 experts with sparse routes and empty groups, and decoder cache/reset
+behavior. Native block widths, non-aligned float32 rows, and grouping across a
+32-token boundary are exercised explicitly. Workspace formatting and Clippy checks
+pass. A full-checkpoint chat smoke test also passes multi-turn recall, reset, and
+clean answer display on the final executable.
+
 ## Reproduce
 
 Build in release mode and run with the same local checkpoint:
@@ -97,7 +163,7 @@ and [GPU clock calibration procedure](https://developer.apple.com/documentation/
 | Cost | Original | Optimized |
 | --- | ---: | ---: |
 | GPU allocations per steady-state decode token | 2,505 | 0 |
-| Kernel dispatches per decode token | 3,157 | 2,113 |
+| Kernel dispatches per decode token | 3,157 | 1,921 |
 | Compute encoders per decode token | 3,157 | 1 |
 | Readback bytes per decode token | 800,232 | 8 |
 | GPU allocations per conversation reset | 288 | 0 |
@@ -113,17 +179,19 @@ only the final prompt token needs vocabulary logits. Dense and expert vector
 products use packed weight loads, and attention reduces 128-key partitions before
 merging their results with the attention sink and output gate.
 
-Load time remains approximately 33–34 seconds in these runs. Removing redundant
-weight-buffer zeroing did not produce a meaningful measured startup improvement.
+The initial runs loaded in approximately 33–34 seconds; subsequent runs varied
+with uncontrolled cache state. Removing redundant weight-buffer zeroing did not
+produce a meaningful measured startup improvement.
 GPU execution and CPU wait times overlap; do not sum those counters. Allocation
 timing includes initialization/copy work inside the allocator, so its breakdown
 changed when uploads began initializing buffers directly.
 
 ## Remaining work
 
-The [updated kernel diagnostic](m4-max-kernel-profile.json) at revision `a6ce376`
+The [earlier kernel diagnostic](m4-max-kernel-profile.json) at revision `a6ce376`
 uses a 32-token prompt, four decode tokens and two trials. Approximate per-token
-decode pass durations are below. These are sampled intervals, not independent
+decode pass durations before the routing, normalization, and controller changes
+are below. These are sampled intervals, not independent
 parts of elapsed time; they overlap and must not be summed into a speedup estimate.
 
 | Kernel | Dispatches per decode token | Sampled milliseconds per token |
@@ -135,16 +203,11 @@ parts of elapsed time; they overlap and must not be summed into a speedup estima
 | RMS normalization | 202 | 5.0 |
 | Expert routing | 48 | 3.5 |
 
-This suggests the next experiments, with ordinary throughput and output parity
-checked after each change:
-
-1. Parallelize expert routing (currently one thread per token) and use more threads
-   for wide RMS normalization. These are small, contained kernel changes.
-2. Fuse the controller's forget/gain projections and elementwise gating. There are
-   still 2,113 dispatches per token, including many small matrix-vector products.
-3. Group prompt tokens by expert and use matrix multiplication for expert
-   projections. Expert vector products and dense matrix multiplication dominate
-   the sampled prefill intervals, at about 7.1 and 5.9 ms per prompt token.
+Those three follow-up changes are now implemented and measured above. Further
+experiments include tuning matrix tiles and grouping thresholds across more prompt
+distributions, and measuring additional projection/normalization fusion. Kernel
+fusion alone did not materially change throughput in this pass, so reducing
+dispatch count should not be treated as proof of a speedup.
 
 Float32 KV caches retain the current numerical behavior and consume substantial
 memory at longer contexts; lower-precision caches need separate accuracy and
