@@ -185,12 +185,17 @@ impl<A: Accelerator> Inkling<A> {
     fn linear(&mut self, name: &str, x: &A::Buffer, rows: usize, cols: usize) -> Result<A::Buffer> {
         let w = self.weights[name].clone();
         let y = self.alloc(rows)?;
+        let vectorized = cols % 4 == 0 && rows >= 128;
         self.run(
-            "matvec",
+            if vectorized { "matvec4" } else { "matvec" },
             &[&y, &w.buffer, x],
             &[rows, cols, w.dtype],
             &[],
-            rows * 32,
+            if vectorized {
+                rows.div_ceil(4) * 32
+            } else {
+                rows * 32
+            },
             128,
         )?;
         Ok(y)
@@ -409,44 +414,46 @@ impl<A: Accelerator> Inkling<A> {
         )?;
         let cache = &self.caches[visit.cache];
         let (keys, values, capacity) = (cache.keys.clone(), cache.values.clone(), cache.capacity);
-        self.copy(&keys, (self.position % capacity) * kh * d, &k, 0, kh * d)?;
-        self.copy(&values, (self.position % capacity) * kh * d, &v, 0, kh * d)?;
         let n = (self.position + 1).min(capacity);
         let extent = if local {
             c.sliding_window_size
         } else {
             c.rel_extent
         };
-        let geometry = [qh, kh, d, self.position, capacity, n, c.d_rel, extent];
-        // Reserve the maximum score extent once, not a larger buffer every token.
-        let scores = self.alloc(qh * capacity)?;
+        let parts = n.div_ceil(128);
+        let geometry = [
+            qh,
+            kh,
+            d,
+            self.position,
+            capacity,
+            n,
+            c.d_rel,
+            extent,
+            parts,
+            1,
+        ];
+        let partials = self.alloc(qh * capacity.div_ceil(128) * (d + 2))?;
         let profiles = self.w(&format!("{p}.rel_logits_proj.proj"));
         self.run(
-            "attn_scores",
-            &[&scores, &q, &keys, &r, &profiles],
+            "attention_partition",
+            &[&partials, &q, &keys, &values, &k, &v, &r, &profiles],
             &geometry,
             &[],
-            qh * n * 32,
+            qh * parts * 128,
             128,
         )?;
-        let attended = self.alloc(qh * d)?;
+        let gated = self.alloc(qh * d)?;
         self.run(
-            "attn_values",
-            &[&attended, &scores, &values, &sink],
+            "attention_finish",
+            &[&gated, &partials, &sink, &gate],
             &geometry,
             &[],
             qh * 32,
             32,
         )?;
-        let gated = self.alloc(qh * d)?;
-        self.run(
-            "gate",
-            &[&gated, &attended, &gate],
-            &[qh * d],
-            &[],
-            qh * d,
-            128,
-        )?;
+        self.copy(&keys, (self.position % capacity) * kh * d, &k, 0, kh * d)?;
+        self.copy(&values, (self.position % capacity) * kh * d, &v, 0, kh * d)?;
         self.linear(&format!("{p}.wo_ud.weight"), &gated, c.hidden_size, qh * d)
     }
     fn expert_projection(

@@ -270,3 +270,159 @@ fn gpu_argmax_handles_ties_tail_and_nonfinite_values() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn vectorized_dense_projection_handles_row_and_column_tiles() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    let (rows, cols) = (131, 132);
+    let x: Vec<f32> = (0..cols).map(|i| (i as f32 * 0.2).cos()).collect();
+    let w: Vec<half::bf16> = (0..rows * cols)
+        .map(|i| half::bf16::from_f32((i as f32 * 0.03).sin()))
+        .collect();
+    let weights = d
+        .upload(
+            &w.iter()
+                .flat_map(|v| v.to_bits().to_le_bytes())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    let input = upload(&mut d, &x);
+    let out = d.allocate(rows * 4).unwrap();
+    // SAFETY: rows may be partial, columns are a multiple of four; guarded 4-row tiles.
+    unsafe {
+        k.run(
+            &mut d,
+            "matvec4",
+            &[&out, &weights, &input],
+            Params::new(&[rows, cols, 1], &[]),
+            rows.div_ceil(4) * 32,
+            128,
+        )
+        .unwrap();
+    }
+    let expected: Vec<f32> = w
+        .chunks_exact(cols)
+        .map(|row| row.iter().zip(&x).map(|(a, b)| a.to_f32() * b).sum())
+        .collect();
+    close(&read(&mut d, &out), &expected, 0.00005);
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn partitioned_attention_matches_scalar_with_tails_ring_and_causal_chunks() {
+    let mut device = Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut device).unwrap();
+    let (qh, kh, dim, rel_dim, extent) = (6, 2, 40, 4, 64);
+    for (position, capacity, batch) in [(513, 257, 1), (126, 257, 5), (600, 257, 7)] {
+        let vals = |n: usize, phase: f32| -> Vec<f32> {
+            (0..n)
+                .map(|i| (i as f32 * 0.017 + phase).sin() * 0.3)
+                .collect()
+        };
+        let q = vals(batch * qh * dim, 0.1);
+        let keys = vals(capacity * kh * dim, 0.2);
+        let values = vals(capacity * kh * dim, 0.3);
+        let new_keys = vals(batch * kh * dim, 0.8);
+        let new_values = vals(batch * kh * dim, 0.9);
+        let rel = vals(batch * qh * rel_dim, 0.4);
+        let profiles = vals(rel_dim * extent, 0.5);
+        let sinks = vals(batch * qh, 0.6);
+        let gate = vals(batch * qh * dim, 0.7);
+        let buffers: Vec<_> = [
+            &q,
+            &keys,
+            &values,
+            &new_keys,
+            &new_values,
+            &rel,
+            &profiles,
+            &sinks,
+            &gate,
+        ]
+        .iter()
+        .map(|v| upload(&mut device, v))
+        .collect();
+        let n = (position + batch).min(capacity);
+        let parts = n.div_ceil(128);
+        let partial = device.allocate(batch * qh * parts * (dim + 2) * 4).unwrap();
+        let out = device.allocate(batch * qh * dim * 4).unwrap();
+        let geometry = [
+            qh, kh, dim, position, capacity, n, rel_dim, extent, parts, batch,
+        ];
+        // SAFETY: all heads/partitions and new-token arrays match the declared geometry.
+        unsafe {
+            kernels
+                .run(
+                    &mut device,
+                    "attention_partition",
+                    &[
+                        &partial,
+                        &buffers[0],
+                        &buffers[1],
+                        &buffers[2],
+                        &buffers[3],
+                        &buffers[4],
+                        &buffers[5],
+                        &buffers[6],
+                    ],
+                    Params::new(&geometry, &[]),
+                    batch * qh * parts * 128,
+                    128,
+                )
+                .unwrap();
+            kernels
+                .run(
+                    &mut device,
+                    "attention_finish",
+                    &[&out, &partial, &buffers[7], &buffers[8]],
+                    Params::new(&geometry, &[]),
+                    batch * qh * 32,
+                    32,
+                )
+                .unwrap();
+        }
+        let mut expected = Vec::new();
+        for token in 0..batch {
+            let pos = position + token;
+            let visible = (pos + 1).min(capacity);
+            for head in 0..qh {
+                let query = token * qh + head;
+                let kv_head = head / (qh / kh);
+                let mut scores = Vec::new();
+                for kp in pos + 1 - visible..=pos {
+                    let key = if kp >= position {
+                        &new_keys[((kp - position) * kh + kv_head) * dim..]
+                    } else {
+                        &keys[((kp % capacity) * kh + kv_head) * dim..]
+                    };
+                    let mut score: f32 = (0..dim).map(|i| q[query * dim + i] * key[i]).sum::<f32>()
+                        / (dim as f32).sqrt();
+                    if pos - kp < extent {
+                        score += (0..rel_dim)
+                            .map(|i| rel[query * rel_dim + i] * profiles[i * extent + pos - kp])
+                            .sum::<f32>();
+                    }
+                    scores.push(score);
+                }
+                let maximum = scores.iter().copied().fold(sinks[query], f32::max);
+                let weights: Vec<f32> = scores.iter().map(|s| (s - maximum).exp()).collect();
+                let denominator = weights.iter().sum::<f32>() + (sinks[query] - maximum).exp();
+                for i in 0..dim {
+                    let mut sum = 0.;
+                    for (j, kp) in (pos + 1 - visible..=pos).enumerate() {
+                        let value = if kp >= position {
+                            new_values[((kp - position) * kh + kv_head) * dim + i]
+                        } else {
+                            values[((kp % capacity) * kh + kv_head) * dim + i]
+                        };
+                        sum += weights[j] * value;
+                    }
+                    expected.push(sum / denominator / (1. + (-gate[query * dim + i]).exp()));
+                }
+            }
+        }
+        close(&read(&mut device, &out), &expected, 0.00001);
+    }
+}
