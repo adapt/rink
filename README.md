@@ -12,6 +12,8 @@ local/global relative attention, and top-8 routing. The single-sequence decoder
 processes prompts in batches of up to 32 tokens using SIMD matrix multiplication,
 grouped native-quantized expert projections, and tiled attention. Routing and wide
 normalizations run in parallel, and controller projections are fused with gating.
+During decoding, expert gate/up projections include SwiGLU, and convolution
+updates incorporate expert summation and residual additions.
 Scratch buffers and conversation caches are reused, and greedy sampling runs on the
 GPU. Activations and caches use float32. Image input, CUDA execution, speculative
 decoding, and batching across requests are follow-up work.
@@ -152,6 +154,8 @@ wide normalization, fused controllers with mixed weight formats, and grouped
 FP4/FP8/float32 experts with empty expert groups, sparse routes, partial tiles, and
 input/output reordering. Batched prefill is compared against single-token execution
 across chunk boundaries, sliding-window wraparound, reset, and subsequent decoding.
+Fused expert activation is compared against separate projection and SwiGLU kernels;
+fused residual convolutions verify both outputs and history across chunks and resets.
 Regenerate the fixtures with
 `python3 scripts/make_test_fixture.py` (standard library only).
 Chat session tests cover exact token history across turns, EOS, continuation, reset,

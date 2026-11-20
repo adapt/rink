@@ -113,6 +113,66 @@ behavior. Native block widths, non-aligned float32 rows, and grouping across a
 pass. A full-checkpoint chat smoke test also passes multi-turn recall, reset, and
 clean answer display on the final executable.
 
+## Residual and SwiGLU fusion
+
+The next pass fuses the two smaller groups of adjacent operations:
+
+- During decoding, expert summation, static convolution, and residual addition
+  run in one kernel.
+  Attention-output convolution also performs its residual addition except at a
+  residual-block boundary. Each channel retains ownership of its convolution
+  history across a prompt chunk, storing the pre-convolution input in the ring.
+  This removes 136 dispatches per token, from 1,921 to 1,785.
+- Each expert gate/up vector projection applies SwiGLU before writing its result.
+  A SIMD group computes one gate/up pair with shared input loads. This removes 48
+  further dispatches and the gate/up intermediate buffers, reaching 1,737 per token.
+
+The first version also fused these operations during large prompt chunks, including
+the grouped expert matrix projection. Prefill measured about 1–2% slower in repeat
+comparisons. A second experiment shared inputs across four gate/up pairs per SIMD
+group but slowed decoding by about 6%; that experiment was reverted. The retained
+version applies fusion to decode and chunks shorter than eight tokens, preserving
+the original parallel kernels for larger prefill chunks. Decode removes 184
+dispatches (9.6%). All math and caches remain float32, with native packed FP4/FP8
+expert weights.
+
+Raw measurements, in execution order:
+
+- [Initial baseline](m4-max-fusion-before.json): `a5085cb`.
+- [Residual/convolution fusion](m4-max-fusion-residual.json): `6f66315`.
+- [Initial SwiGLU fusion](m4-max-fusion-initial.json): `78f2c5e`.
+- [Repeated baseline](m4-max-fusion-baseline-repeat.json): `a5085cb`.
+- [Four-pair experiment](m4-max-fusion-row-reuse.json): `27aeb5a`, reverted.
+- [Retained decode fusions](m4-max-fusion-final.json): `eedfdce`.
+
+All runs use three trials, 32 decode tokens, context 4,096, and profiling disabled.
+Cold scratch allocations are included; load time is reported separately. The
+repeated baseline and final run use the same prompt lengths and order.
+
+Median throughput on the same M4 Max and checkpoint:
+
+| Prompt tokens | Baseline prompt tok/s | Final prompt tok/s | Baseline decode tok/s | Final decode tok/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 33.8 | 33.9 | 25.4 | 25.4 |
+| 32 | 101.1 | 100.3 | 25.1 | 24.9 |
+| 128 | 101.5 | 101.3 | 23.5 | 23.3 |
+| 1,024 | 92.8 | 92.7 | 23.0 | 23.1 |
+
+The final medians differ from the repeated baseline by at most 1%. This pass
+reduces dispatch count and intermediate writes during decoding, but does not
+establish a throughput improvement. The larger prefill chunks retain their
+original dispatch counts. All 384 generated token IDs match the repeated baseline.
+Every final decode trial allocates no GPU buffers, uses one command buffer and
+encoder per token, and reads eight bytes per token. Every reset also allocates no
+GPU buffers.
+
+The 28-test suite compares fused operations with the separate kernels, including
+FP4/FP8/float32 weights, sparse expert groups, gate/up pair ordering, partial matrix
+tiles, convolution history wraparound, chunks longer than the history ring, and
+resets without clearing state. Tiny-model scalar and batched comparisons also pass,
+along with workspace formatting and Clippy checks. A full-checkpoint chat smoke
+test passes multi-turn recall, reset, and clean answer display on the final build.
+
 ## Reproduce
 
 Build in release mode and run with the same local checkpoint:
@@ -163,7 +223,7 @@ and [GPU clock calibration procedure](https://developer.apple.com/documentation/
 | Cost | Original | Optimized |
 | --- | ---: | ---: |
 | GPU allocations per steady-state decode token | 2,505 | 0 |
-| Kernel dispatches per decode token | 3,157 | 1,921 |
+| Kernel dispatches per decode token | 3,157 | 1,737 |
 | Compute encoders per decode token | 3,157 | 1 |
 | Readback bytes per decode token | 800,232 | 8 |
 | GPU allocations per conversation reset | 288 | 0 |
@@ -203,11 +263,12 @@ parts of elapsed time; they overlap and must not be summed into a speedup estima
 | RMS normalization | 202 | 5.0 |
 | Expert routing | 48 | 3.5 |
 
-Those three follow-up changes are now implemented and measured above. Further
-experiments include tuning matrix tiles and grouping thresholds across more prompt
-distributions, and measuring additional projection/normalization fusion. Kernel
-fusion alone did not materially change throughput in this pass, so reducing
-dispatch count should not be treated as proof of a speedup.
+Those three follow-up changes and the residual/SwiGLU fusions are implemented above.
+Further experiments include combining independent attention projections, fusing
+K/V convolution with normalization and cache updates during decoding, and tuning
+matrix tiles and grouping thresholds across more prompt distributions. The earlier
+controller fusion did not materially change throughput, so reducing dispatch count
+should not be treated as proof of a speedup.
 
 Float32 KV caches retain the current numerical behavior and consume substantial
 memory at longer contexts; lower-precision caches need separate accuracy and
