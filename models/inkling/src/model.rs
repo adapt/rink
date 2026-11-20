@@ -250,12 +250,6 @@ impl<A: Accelerator> Inkling<A> {
         )?;
         Ok(y)
     }
-    fn add(&mut self, a: &A::Buffer, b: &A::Buffer) -> Result<A::Buffer> {
-        let n = self.config.text_config.hidden_size * self.batch;
-        let y = self.alloc(n)?;
-        self.run("add", &[&y, a, b], &[n], &[], n, 128)?;
-        Ok(y)
-    }
     fn read_blocks(
         &mut self,
         blocks: &Blocks<A::Buffer>,
@@ -404,6 +398,49 @@ impl<A: Accelerator> Inkling<A> {
             ],
             heads * self.batch * 32,
             32,
+        )?;
+        Ok(y)
+    }
+    fn residual_conv(
+        &mut self,
+        x: &A::Buffer,
+        routing: Option<&A::Buffer>,
+        residual: Option<&A::Buffer>,
+        visit: Visit,
+    ) -> Result<A::Buffer> {
+        let c = &self.config.text_config;
+        let h = c.hidden_size;
+        let top = routing.map_or(0, |_| c.num_experts_per_tok);
+        let (kind, state) = if routing.is_some() {
+            ("mlp", 3)
+        } else {
+            ("attn", 2)
+        };
+        let w = self.w(&format!("layers.{}.{kind}_sconv.weight", visit.layer));
+        let history = self.caches[visit.cache].conv[state].clone();
+        let geometry = [
+            h,
+            c.sconv_kernel_size,
+            self.position,
+            self.batch,
+            top,
+            usize::from(residual.is_some()),
+        ];
+        let y = self.alloc(h * self.batch)?;
+        self.run(
+            "residual_convolution",
+            &[
+                &y,
+                x,
+                &w,
+                &history,
+                residual.unwrap_or(x),
+                routing.unwrap_or(x),
+            ],
+            &geometry,
+            &[],
+            h,
+            128,
         )?;
         Ok(y)
     }
@@ -611,8 +648,9 @@ impl<A: Accelerator> Inkling<A> {
             max_tiles,
         })
     }
-    fn moe(&mut self, x: &A::Buffer, layer: usize) -> Result<A::Buffer> {
+    fn moe(&mut self, x: &A::Buffer, residual: &A::Buffer, visit: Visit) -> Result<A::Buffer> {
         let c = self.config.text_config.clone();
+        let layer = visit.layer;
         let logits = self.linear(
             &format!("layers.{layer}.mlp.gate.weight"),
             x,
@@ -645,16 +683,7 @@ impl<A: Accelerator> Inkling<A> {
             128,
         )?;
         let down = self.expert_projection(layer, true, &activated, &routing, groups.as_ref())?;
-        let y = self.alloc(c.hidden_size * self.batch)?;
-        self.run(
-            "expert_sum",
-            &[&y, &down, &routing],
-            &[c.hidden_size, c.num_experts_per_tok, self.batch],
-            &[],
-            c.hidden_size * self.batch,
-            128,
-        )?;
-        Ok(y)
+        self.residual_conv(&down, Some(&routing), Some(residual), visit)
     }
     fn layer(
         &mut self,
@@ -723,8 +752,14 @@ impl<A: Accelerator> Inkling<A> {
             inputs.push(self.norm(&x, Some(&norm), h, 1)?);
         }
         let attn = self.attention(&inputs, visit)?;
-        let attn = self.conv(&attn, None, &format!("{prefix}.attn_sconv"), visit, 2, h)?;
-        let residual = if visit.layer % c.n_layers_per_attn_res_block == 0 {
+        let boundary = visit.layer % c.n_layers_per_attn_res_block == 0;
+        let residual = self.residual_conv(
+            &attn,
+            None,
+            if boundary { None } else { Some(hidden) },
+            visit,
+        )?;
+        if boundary {
             self.copy(
                 &blocks.buffer,
                 blocks.count * h * self.batch,
@@ -733,10 +768,7 @@ impl<A: Accelerator> Inkling<A> {
                 h * self.batch,
             )?;
             blocks.count += 1;
-            attn
-        } else {
-            self.add(hidden, &attn)?
-        };
+        }
         let x = self.read_blocks(
             blocks,
             &residual,
@@ -755,9 +787,7 @@ impl<A: Accelerator> Inkling<A> {
             x
         };
         let x = self.norm(&x, Some(&format!("{prefix}.mlp_norm.weight")), h, 1)?;
-        let x = self.moe(&x, visit.layer)?;
-        let x = self.conv(&x, None, &format!("{prefix}.mlp_sconv"), visit, 3, h)?;
-        self.add(&residual, &x)
+        self.moe(&x, &residual, visit)
     }
     fn hidden(&mut self, tokens: &[u32]) -> Result<A::Buffer> {
         self.scratch_cursor = 0;

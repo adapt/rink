@@ -56,6 +56,7 @@ impl<A: Accelerator> Kernels<A> {
             "controller_matvec",
             "controller_matmul",
             "convolution",
+            "residual_convolution",
             "attn_scores",
             "attn_values",
             "gate",

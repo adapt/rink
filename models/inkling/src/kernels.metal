@@ -175,6 +175,21 @@ kernel void convolution(device float* y [[buffer(0)]], device const float* x [[b
         y[token*c+i]=v*rsqrt(float(1+k*(p.u[3]?2:1)));
     }
 }
+// channels, taps, absolute position, batch, top_k (0 = plain input), add_residual.
+// Each channel owns its history across the entire chunk. Store the convolution's
+// input in the ring, before the convolution and residual addition, as in the
+// separate kernels. Mixture weights are summed in their original routing order.
+kernel void residual_convolution(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* w [[buffer(2)]], device float* state [[buffer(3)]], device const float* residual [[buffer(4)]], device const float* routing [[buffer(5)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) {
+    uint c=p.u[0],k=p.u[1],top=p.u[4];if(i>=c)return;
+    for(uint token=0;token<p.u[3];token++){uint pos=p.u[2]+token;float input=0;
+        if(top){for(uint j=0;j<top;j++)input+=x[(token*top+j)*c+i]*routing[2*(token*top+j)+1];}
+        else input=x[token*c+i];
+        state[(pos%k)*c+i]=input;float v=input;
+        for(uint lag=0;lag<k && lag<=pos;lag++)v+=w[i*k+(k-1-lag)]*state[((pos+k-lag)%k)*c+i];
+        float value=v*rsqrt(float(1+k));
+        y[token*c+i]=p.u[5]?residual[token*c+i]+value:value;
+    }
+}
 // Commit only the last cache-capacity entries after attention reads the old ring.
 kernel void cache_write(device float* keys [[buffer(0)]], device float* values [[buffer(1)]], device const float* k [[buffer(2)]], device const float* v [[buffer(3)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) {
     uint token=i/p.u[0],c=i%p.u[0];if(token>=p.u[3] || token+p.u[1]<p.u[3])return;

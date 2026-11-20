@@ -28,6 +28,118 @@ fn close(a: &[f32], b: &[f32], tol: f32) {
 
 #[test]
 #[ignore = "requires a Metal GPU"]
+fn fused_residual_convolution_preserves_mixtures_history_chunks_and_reset() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    for channels in [1usize, 17, 129] {
+        for taps in [1usize, 4, 7] {
+            for top in [0usize, 1, 3] {
+                for add in [false, true] {
+                    let values = |n, phase: usize| -> Vec<f32> {
+                        (0..n)
+                            .map(|i| ((i * 13 + phase) % 37) as f32 / 41. - 0.4)
+                            .collect()
+                    };
+                    let weights = upload(&mut d, &values(channels * taps, 5));
+                    let initial = values(channels * taps, 11);
+                    let old_state = upload(&mut d, &initial);
+                    let new_state = upload(&mut d, &initial);
+                    let mut position = 0;
+                    // A chunk longer than the ring, multiple continuations, then
+                    // a reset without clearing either state allocation.
+                    for (batch, reset) in
+                        [(1, false), (2, false), (9, false), (3, false), (5, true)]
+                    {
+                        if reset {
+                            position = 0;
+                        }
+                        let n = channels * batch;
+                        let input = upload(&mut d, &values(n * top.max(1), position));
+                        let residual = upload(&mut d, &values(n, position + 7));
+                        let routing = upload(
+                            &mut d,
+                            &(0..batch * top.max(1))
+                                .flat_map(|i| [0., (i % 5) as f32 / 7.])
+                                .collect::<Vec<_>>(),
+                        );
+                        let mixture = d.allocate(n * 4).unwrap();
+                        let convolved = d.allocate(n * 4).unwrap();
+                        let old = d.allocate(n * 4).unwrap();
+                        let new = upload(&mut d, &vec![f32::NAN; n]);
+                        // SAFETY: each channel owns its ring slots. Input and
+                        // routing lengths match top-k; unused buffers are valid
+                        // placeholders. Both states start with identical history.
+                        unsafe {
+                            if top > 0 {
+                                k.run(
+                                    &mut d,
+                                    "expert_sum",
+                                    &[&mixture, &input, &routing],
+                                    Params::new(&[channels, top, batch], &[]),
+                                    n,
+                                    128,
+                                )
+                                .unwrap();
+                            }
+                            k.run(
+                                &mut d,
+                                "convolution",
+                                &[
+                                    &convolved,
+                                    if top > 0 { &mixture } else { &input },
+                                    &weights,
+                                    &old_state,
+                                    &input,
+                                ],
+                                Params::new(&[channels, taps, position, 0, channels, batch], &[]),
+                                channels,
+                                128,
+                            )
+                            .unwrap();
+                            if add {
+                                k.run(
+                                    &mut d,
+                                    "add",
+                                    &[&old, &residual, &convolved],
+                                    Params::new(&[n], &[]),
+                                    n,
+                                    128,
+                                )
+                                .unwrap();
+                            }
+                            k.run(
+                                &mut d,
+                                "residual_convolution",
+                                &[&new, &input, &weights, &new_state, &residual, &routing],
+                                Params::new(
+                                    &[channels, taps, position, batch, top, usize::from(add)],
+                                    &[],
+                                ),
+                                channels,
+                                128,
+                            )
+                            .unwrap();
+                        }
+                        close(
+                            &read(&mut d, &new),
+                            &read(&mut d, if add { &old } else { &convolved }),
+                            0.000003,
+                        );
+                        close(
+                            &read(&mut d, &new_state),
+                            &read(&mut d, &old_state),
+                            0.000001,
+                        );
+                        position += batch;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
 fn parallel_routing_keeps_nonfinite_candidates_in_bounds() {
     let mut d = Metal::new().unwrap();
     let k = Kernels::compile(&mut d).unwrap();
