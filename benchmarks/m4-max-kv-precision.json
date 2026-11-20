@@ -1,0 +1,328 @@
+{
+  "context": 16384,
+  "measurements": [
+    {
+      "centered_logit_rmse": 0.33057265049750395,
+      "f16_argmax": 151537,
+      "f32_argmax": 151537,
+      "kl_f32_to_f16": 9.224862373450623e-05,
+      "max_logit_error": 1.7902926206588745,
+      "position": 128
+    },
+    {
+      "centered_logit_rmse": 0.21770973647384645,
+      "f16_argmax": 152822,
+      "f32_argmax": 152822,
+      "kl_f32_to_f16": 0.00018680899968103384,
+      "max_logit_error": 1.2396718263626099,
+      "position": 1024
+    },
+    {
+      "centered_logit_rmse": 1.2142937336860662,
+      "f16_argmax": 151537,
+      "f32_argmax": 151537,
+      "kl_f32_to_f16": 0.00027686988231952886,
+      "max_logit_error": 6.238347053527832,
+      "position": 8192
+    },
+    {
+      "centered_logit_rmse": 0.3435055389071306,
+      "f16_argmax": 153671,
+      "f32_argmax": 153671,
+      "kl_f32_to_f16": 0.0002290887912704506,
+      "max_logit_error": 1.7112048864364624,
+      "position": 8193
+    },
+    {
+      "centered_logit_rmse": 0.3111168254502423,
+      "f16_argmax": 13,
+      "f32_argmax": 13,
+      "kl_f32_to_f16": 0.0004645068223604463,
+      "max_logit_error": 2.1650390625,
+      "position": 8194
+    },
+    {
+      "centered_logit_rmse": 0.26804780011939144,
+      "f16_argmax": 220,
+      "f32_argmax": 220,
+      "kl_f32_to_f16": 0.0028459004256286484,
+      "max_logit_error": 1.3939266204833984,
+      "position": 8195
+    },
+    {
+      "centered_logit_rmse": 0.24149465074631668,
+      "f16_argmax": 100887,
+      "f32_argmax": 100887,
+      "kl_f32_to_f16": 0.005234306578007732,
+      "max_logit_error": 1.9268269538879395,
+      "position": 8196
+    },
+    {
+      "centered_logit_rmse": 0.1406146107748202,
+      "f16_argmax": 150202,
+      "f32_argmax": 150202,
+      "kl_f32_to_f16": 4.4316402467009454e-05,
+      "max_logit_error": 0.9467892646789551,
+      "position": 8197
+    },
+    {
+      "centered_logit_rmse": 0.19259325325104312,
+      "f16_argmax": 149878,
+      "f32_argmax": 149878,
+      "kl_f32_to_f16": 0.00012706851618108378,
+      "max_logit_error": 1.5177507400512695,
+      "position": 8198
+    },
+    {
+      "centered_logit_rmse": 1.770305278092282,
+      "f16_argmax": 151931,
+      "f32_argmax": 151931,
+      "kl_f32_to_f16": 0.003111843720615493,
+      "max_logit_error": 8.793025970458984,
+      "position": 8199
+    },
+    {
+      "centered_logit_rmse": 0.236778957842405,
+      "f16_argmax": 152822,
+      "f32_argmax": 152822,
+      "kl_f32_to_f16": 0.00014304751341737075,
+      "max_logit_error": 1.722771406173706,
+      "position": 8200
+    },
+    {
+      "centered_logit_rmse": 0.2867630707692963,
+      "f16_argmax": 150247,
+      "f32_argmax": 150247,
+      "kl_f32_to_f16": 0.0006581331687109295,
+      "max_logit_error": 1.7922569513320923,
+      "position": 8201
+    },
+    {
+      "centered_logit_rmse": 0.18351577569365873,
+      "f16_argmax": 11,
+      "f32_argmax": 11,
+      "kl_f32_to_f16": 0.000278629824019382,
+      "max_logit_error": 1.797290325164795,
+      "position": 8202
+    },
+    {
+      "centered_logit_rmse": 0.38583392272758255,
+      "f16_argmax": 150151,
+      "f32_argmax": 150151,
+      "kl_f32_to_f16": 0.00013371375576745736,
+      "max_logit_error": 2.5721521377563477,
+      "position": 8203
+    },
+    {
+      "centered_logit_rmse": 1.25552601469036,
+      "f16_argmax": 151537,
+      "f32_argmax": 151537,
+      "kl_f32_to_f16": 0.0023604684224826943,
+      "max_logit_error": 6.515693664550781,
+      "position": 8204
+    },
+    {
+      "centered_logit_rmse": 0.2067237737748608,
+      "f16_argmax": 153671,
+      "f32_argmax": 153671,
+      "kl_f32_to_f16": 3.152600806467687e-05,
+      "max_logit_error": 0.9130194187164307,
+      "position": 8205
+    },
+    {
+      "centered_logit_rmse": 0.313488324673053,
+      "f16_argmax": 13,
+      "f32_argmax": 13,
+      "kl_f32_to_f16": 0.000332216942329672,
+      "max_logit_error": 1.8974719047546387,
+      "position": 8206
+    },
+    {
+      "centered_logit_rmse": 0.25097824590339074,
+      "f16_argmax": 220,
+      "f32_argmax": 220,
+      "kl_f32_to_f16": 0.002869850681022996,
+      "max_logit_error": 1.3604705333709717,
+      "position": 8207
+    },
+    {
+      "centered_logit_rmse": 0.3134215212544956,
+      "f16_argmax": 100887,
+      "f32_argmax": 100887,
+      "kl_f32_to_f16": 0.04021828978034087,
+      "max_logit_error": 2.0392954349517822,
+      "position": 8208
+    },
+    {
+      "centered_logit_rmse": 0.30222288421878885,
+      "f16_argmax": 150202,
+      "f32_argmax": 150202,
+      "kl_f32_to_f16": 0.00010784802552604379,
+      "max_logit_error": 1.350968360900879,
+      "position": 8209
+    },
+    {
+      "centered_logit_rmse": 0.2041191743930879,
+      "f16_argmax": 149878,
+      "f32_argmax": 149878,
+      "kl_f32_to_f16": 9.080725137514681e-05,
+      "max_logit_error": 1.285139560699463,
+      "position": 8210
+    },
+    {
+      "centered_logit_rmse": 1.6154423476240525,
+      "f16_argmax": 151931,
+      "f32_argmax": 151931,
+      "kl_f32_to_f16": 0.0006847041678657353,
+      "max_logit_error": 9.005897521972656,
+      "position": 8211
+    },
+    {
+      "centered_logit_rmse": 0.346856934142259,
+      "f16_argmax": 152822,
+      "f32_argmax": 152822,
+      "kl_f32_to_f16": 0.00018816563902057673,
+      "max_logit_error": 2.030045509338379,
+      "position": 8212
+    },
+    {
+      "centered_logit_rmse": 0.4148108265852427,
+      "f16_argmax": 150247,
+      "f32_argmax": 150247,
+      "kl_f32_to_f16": 0.00018476092542916997,
+      "max_logit_error": 1.864525318145752,
+      "position": 8213
+    },
+    {
+      "centered_logit_rmse": 0.30015900205012536,
+      "f16_argmax": 11,
+      "f32_argmax": 11,
+      "kl_f32_to_f16": 0.00023001172811525178,
+      "max_logit_error": 1.6553754806518555,
+      "position": 8214
+    },
+    {
+      "centered_logit_rmse": 0.2940807421077229,
+      "f16_argmax": 150151,
+      "f32_argmax": 150151,
+      "kl_f32_to_f16": 8.852471304251857e-05,
+      "max_logit_error": 1.8690743446350098,
+      "position": 8215
+    },
+    {
+      "centered_logit_rmse": 1.2309385292242097,
+      "f16_argmax": 151537,
+      "f32_argmax": 151537,
+      "kl_f32_to_f16": 0.0005689621992717534,
+      "max_logit_error": 7.052637100219727,
+      "position": 8216
+    },
+    {
+      "centered_logit_rmse": 0.31270637026680165,
+      "f16_argmax": 153671,
+      "f32_argmax": 153671,
+      "kl_f32_to_f16": 0.00016901913169700705,
+      "max_logit_error": 1.6770148277282715,
+      "position": 8217
+    },
+    {
+      "centered_logit_rmse": 0.2880832782996808,
+      "f16_argmax": 13,
+      "f32_argmax": 13,
+      "kl_f32_to_f16": 0.0007487140771358236,
+      "max_logit_error": 2.533902168273926,
+      "position": 8218
+    },
+    {
+      "centered_logit_rmse": 0.26661863586935114,
+      "f16_argmax": 220,
+      "f32_argmax": 220,
+      "kl_f32_to_f16": 0.003205373044135078,
+      "max_logit_error": 1.5516586303710938,
+      "position": 8219
+    },
+    {
+      "centered_logit_rmse": 0.19919021439035972,
+      "f16_argmax": 100887,
+      "f32_argmax": 100887,
+      "kl_f32_to_f16": 0.013041087319924607,
+      "max_logit_error": 1.542048454284668,
+      "position": 8220
+    },
+    {
+      "centered_logit_rmse": 0.23508949786201702,
+      "f16_argmax": 150202,
+      "f32_argmax": 150202,
+      "kl_f32_to_f16": 7.739402283728478e-05,
+      "max_logit_error": 1.3115942478179932,
+      "position": 8221
+    },
+    {
+      "centered_logit_rmse": 0.1859845137472785,
+      "f16_argmax": 149878,
+      "f32_argmax": 149878,
+      "kl_f32_to_f16": 9.893931757094655e-05,
+      "max_logit_error": 1.0556979179382324,
+      "position": 8222
+    },
+    {
+      "centered_logit_rmse": 1.808015575204453,
+      "f16_argmax": 151931,
+      "f32_argmax": 151931,
+      "kl_f32_to_f16": 0.004651214330782607,
+      "max_logit_error": 9.371716499328613,
+      "position": 8223
+    },
+    {
+      "centered_logit_rmse": 0.3522511758641719,
+      "f16_argmax": 152822,
+      "f32_argmax": 152822,
+      "kl_f32_to_f16": 0.00047606546725206654,
+      "max_logit_error": 1.6397294998168945,
+      "position": 8224
+    }
+  ],
+  "prompt_lengths": [
+    128,
+    1024,
+    8192
+  ],
+  "teacher_forced_tokens": [
+    151537,
+    153671,
+    13,
+    220,
+    100887,
+    150202,
+    149878,
+    151931,
+    152822,
+    150247,
+    11,
+    150151,
+    151537,
+    153671,
+    13,
+    220,
+    100887,
+    150202,
+    149878,
+    151931,
+    152822,
+    150247,
+    11,
+    150151,
+    151537,
+    153671,
+    13,
+    220,
+    100887,
+    150202,
+    149878,
+    151931
+  ],
+  "revision": "4787f2e",
+  "checkpoint_revision": "6e7c8248f75265bdd4fbab5273304243b5d8c2cb",
+  "date": "2026-11-20",
+  "command": "cargo run --release -p rink-inkling --example compare_kv_cache -- checkpoints/inkling-2-mini"
+}

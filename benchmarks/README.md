@@ -173,13 +173,107 @@ resets without clearing state. Tiny-model scalar and batched comparisons also pa
 along with workspace formatting and Clippy checks. A full-checkpoint chat smoke
 test passes multi-turn recall, reset, and clean answer display on the final build.
 
+## FP16 caches and 256K chat
+
+Revision `4adbfa0` defaults to FP16 KV-cache storage and shares a single attention
+partition workspace across all layer visits. Attention arithmetic, softmax,
+convolution history, and activations remain FP32. Fresh keys/values are rounded
+before attention as well as cache writes, so prompt chunking does not change the
+storage precision. `--kv-cache f32` retains the FP32 comparison path.
+
+At a capacity of 262,144 tokens, calculated from the released configuration:
+
+| Allocation | Previous implementation | FP16 and shared workspace |
+| --- | ---: | ---: |
+| KV caches, all 48 visits | 16.31 GiB | 8.16 GiB |
+| Attention partitions, batch 32 | 6.21 GiB | 780 MiB |
+
+The eight full-attention visits keep independent histories; the other 40 visits
+keep 1,024-token rings. Workspace reuse relies on the accelerator's ordered command
+stream: each attention result consumes its partials before the next visit overwrites
+them. Workspace is sized for the configured capacity and grows only when a larger
+batch requires it. Cache capacity is allocated up front. No extra dispatches or CPU
+synchronizations are needed for either change.
+
+The 256K default applies to `chat`. `bench` remains at 4K and `generate` at 2K unless
+given an explicit `--context`. Benchmark JSON now includes `kv_cache`, the Metal
+recommended working-set limit, and `device_allocated_bytes` at phase boundaries;
+the existing `allocated_bytes` counter is cumulative allocation traffic per phase.
+
+The [full-checkpoint 256K capacity run](m4-max-fp16-256k.json) on the M4 Max loaded
+in 34.3 seconds, reporting 25.76 GiB of Metal allocations after load and at most
+27.19 GiB at the recorded phase boundaries (37.44 GiB recommended limit). After
+the first prompt, allocations settled at 27.17 GiB. Decode still used zero GPU
+allocations, 1,737 dispatches, one encoder/command buffer, and eight readback bytes
+per token. These are phase-boundary allocation readings, not a continuously sampled
+process-memory peak.
+
+| Prompt tokens | FP16 prefill tok/s | FP16 decode tok/s |
+| ---: | ---: | ---: |
+| 32 | 65.75 | 25.23 |
+| 128 | 101.24 | 23.26 |
+| 1,024 | 91.07 | 23.10 |
+| 8,192 | 80.88 | 21.86 |
+
+This is one trial per length, with 32 fixed-work decode tokens and profiling
+disabled. The first prompt includes allocation of the larger workspace. It is a
+capacity and correctness smoke run, not evidence of a throughput improvement.
+The cache reserves the complete 256K capacity, but the longest full-model prompt
+in this run contains 8K tokens.
+
+The [FP32 comparison run](m4-max-fp32-cache-comparison.json) uses the same prompt
+and decode lengths with 16K reserved capacity to reduce test memory. Its outputs
+for 32/128/1,024-token prompts match all 96 corresponding token IDs in the earlier
+FP32 fusion baseline. FP16 matches 32/32, 29/32, 8/32, and 32/32 generated IDs at
+32/128/1,024/8,192 prompt tokens, respectively. Once greedy sampling chooses a
+different token, subsequent histories differ, so these counts are not accuracy
+scores or independent next-token comparisons.
+
+For a comparison on identical histories, run:
+
+```sh
+cargo run --release -p rink-inkling --example compare_kv_cache -- \
+  checkpoints/inkling-2-mini > precision.json
+```
+
+This loads one model at a time, compares full-vocabulary logits after 128, 1,024,
+and 8,192 prompt tokens, and then feeds both cache formats the same 32 continuation
+tokens chosen by FP32. It reports centered logit RMSE, maximum absolute error,
+KL divergence from the FP32 distribution, and greedy-token agreement.
+
+The [recorded comparison](m4-max-kv-precision.json) agrees on the greedy token at
+all 35 sampled positions. Mean KL divergence is 0.00241 nats (maximum 0.04022).
+The full-vocabulary logits do change: mean centered RMSE is 0.481, its maximum
+is 1.808, and the largest absolute logit difference is 9.372. These measurements
+describe numerical sensitivity on one repeated-text prompt, not general model
+quality or proof that quantization never changes answers.
+
+The 31-test suite includes separate FP16/FP32 scalar decoder references, chunked
+versus single-token parity, cache rounding and ring guards, attention comparisons
+at 8K/64K/256K positions, and memory-growth/reuse checks across chunks and resets.
+An additional full-geometry test uses 24 query heads, eight KV heads, dimension
+128, a 32-token batch and 262,144 cached positions. It retrieves a marked first
+token and checks every output against an analytic softmax, with unwritten cache
+rows poisoned to detect incorrect reads. This exposed rounding drift in long
+partition reductions. Compensated FP32 sums now merge more than 128 partitions;
+the accumulation order at shorter contexts is retained.
+The [final release check](m4-max-256k-final.json) at revision `31eac49` reserves a
+256K FP16 cache and processes a 1,024-token prompt with 32 decode steps. All 32
+generated IDs match the pre-compensation FP16 run, with zero decode allocations.
+An interactive chat smoke test with no flags confirmed the 262,144-token context,
+FP16 cache, effort 0.9 and 512-token reply defaults. It answered `OK`, recalled `57`
+on the next turn, and answered `4` after `/reset`, without exposing protocol markers
+or reloading the model.
+These kernel checks exercise long addresses and full cache scans; they do not
+establish end-to-end model accuracy on a 256K-token prompt.
+
 ## Reproduce
 
 Build in release mode and run with the same local checkpoint:
 
 ```sh
 cargo run --release -- bench --prompt-tokens 32,128,1024 --decode-tokens 16 \
-  --repetitions 3 --context 4096 > benchmark.json
+  --repetitions 3 --context 4096 --kv-cache f32 > benchmark.json
 ```
 
 The benchmark constructs deterministic prompts from repeated text, loads weights
@@ -270,10 +364,11 @@ matrix tiles and grouping thresholds across more prompt distributions. The earli
 controller fusion did not materially change throughput, so reducing dispatch count
 should not be treated as proof of a speedup.
 
-Float32 KV caches retain the current numerical behavior and consume substantial
-memory at longer contexts; lower-precision caches need separate accuracy and
-capacity measurements. Startup loading also warrants its own I/O and copy
-profiling. Batching across requests and speculative decoding are not implemented.
+FP16 KV caches reduce long-context memory, but broader accuracy evaluation and
+long-prompt attention optimization remain. A 1M context on a 48 GiB Mac would need
+further cache compression and workspace reduction. Startup loading also warrants
+its own I/O and copy profiling. Batching across requests and speculative decoding
+are not implemented.
 
 Validation includes Metal kernel comparisons against scalar results, tiny-model
 single-token/batched parity across cache wraparound and resets, full-checkpoint
