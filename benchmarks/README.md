@@ -267,6 +267,85 @@ or reloading the model.
 These kernel checks exercise long addresses and full cache scans; they do not
 establish end-to-end model accuracy on a 256K-token prompt.
 
+## Projection scheduling with identical arithmetic
+
+Revision `f090215` changes how Metal schedules projections. It retains FP32
+activations and arithmetic, native expert weight formats, FP16/FP32 cache options,
+and 32-token prompt chunks. Fast math remains disabled.
+
+- Packed dense vectors give each output row its own SIMD group. Each row retains
+  the original four-element dot products and reduction order. Small projections
+  keep scalar products and use 32-thread groups. The scalar/packed shape boundary
+  is unchanged because those two algorithms have different reduction orders.
+- Dense prompt projections share staged inputs and weights across a 16-token by
+  32-row tile for batches of at least 16 tokens. Each 8-by-8 matrix accumulator
+  performs the same ordered operations as the original kernel.
+- Grouped expert projections share gathered inputs across 32 output rows. Weight
+  conversion, matrix accumulation, routing order, and output placement are unchanged.
+
+Fresh medians on the same M4 Max, using three trials per prompt length, 32 decode
+tokens per trial, FP16 caches, and a 262,144-token capacity:
+
+| Prompt tokens | Before prefill tok/s | After prefill tok/s | Before decode tok/s | After decode tok/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 100.73 | 150.99 | 25.62 | 28.08 |
+| 128 | 101.34 | 152.57 | 23.91 | 25.76 |
+| 1,024 | 92.55 | 133.40 | 23.01 | 25.91 |
+
+Prompt processing improves by 44–51%, and decoding by 8–13%. All 288 generated
+token IDs match the baseline. Decode retains zero buffer allocations, 1,737 kernel
+dispatches, one encoder/command buffer, and eight readback bytes per token.
+Steady-state Metal allocations remain 27.17 GiB. Loading is excluded from throughput;
+the first prompt's allocation cost is included. Filesystem and shader-cache state
+are not controlled, and the before and after runs execute sequentially.
+
+- [Before](m4-max-projection-before.json): `8c179d0`.
+- [After](m4-max-projection-after.json): `f090215`.
+- [Baseline kernel profile](m4-max-projection-profile-before.json): diagnostic
+  sampled intervals, with profiling overhead.
+- [Isolated projection timings](m4-max-projection-kernels.json): repeated buffers
+  can remain cached; these measurements do not establish full-model throughput.
+
+All 32 workspace tests pass. New checks require identical output bits for dense
+projections across FP32, BF16, and FP16 weights, varied magnitudes, partial tiles,
+input offsets, and output guards. Expert checks compare both matrix kernels bit
+for bit with NVFP4, MXFP8, and FP32 weights, sparse routes, both input layouts,
+empty groups, and partial tiles. Existing scalar decoder, cache, reset, and full
+256K attention tests also pass. Formatting and Clippy checks pass.
+
+Full-checkpoint comparisons use three token histories: repeated text through 8,192
+tokens, a code prompt, and a conversation-style prompt. Each has 32 continuation
+tokens chosen by the baseline. Intermediate checks cross prompt chunk boundaries
+and the sliding-window boundary; the model resets between histories. Both
+[FP16 caches](m4-max-projection-logits-f16.json) and
+[FP32 caches](m4-max-projection-logits-f32.json) match every output bit: 24,607,134
+logits at 123 positions per precision, or 49,214,268 logits total. These comparisons
+use 16K cache capacity and establish agreement on these histories on the M4 Max.
+
+To reproduce, copy `models/inkling/examples/compare_revisions.rs` into the baseline
+checkout if needed. Build the example in each checkout. Record with the baseline
+executable, then compare with the candidate executable:
+
+```sh
+# Baseline build:
+cargo run --release -p rink-inkling --example compare_revisions -- \
+  record /absolute/path/to/checkpoint /tmp/rink-reference.json f16 8192
+
+# Candidate build:
+cargo run --release -p rink-inkling --example compare_revisions -- \
+  compare /absolute/path/to/checkpoint /tmp/rink-reference.json > comparison.json
+```
+
+Repeat with `f32` when recording the second reference. The comparison exits with an
+error if any logit bit differs. Snapshots store integer float bits to avoid decimal
+rounding; each reference is about 258 MiB and should remain outside the repository.
+
+Run isolated projection measurements with:
+
+```sh
+cargo run --release -p rink-inkling --example bench_projections
+```
+
 ## Reproduce
 
 Build in release mode and run with the same local checkpoint:
@@ -357,7 +436,8 @@ parts of elapsed time; they overlap and must not be summed into a speedup estima
 | RMS normalization | 202 | 5.0 |
 | Expert routing | 48 | 3.5 |
 
-Those three follow-up changes and the residual/SwiGLU fusions are implemented above.
+Those three follow-up changes, residual/SwiGLU fusions, and projection scheduling
+changes are implemented above.
 Further experiments include combining independent attention projections, fusing
 K/V convolution with normalization and cache updates during decoding, and tuning
 matrix tiles and grouping thresholds across more prompt distributions. The earlier
