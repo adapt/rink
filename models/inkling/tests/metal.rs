@@ -208,6 +208,11 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
         (1, 160, 22),
         (2, 17, 22),
         (2, 160, 14),
+        (0, 160, 37),
+        (1, 160, 65),
+        (2, 37, 65),
+        (0, 2304, 32),
+        (1, 1152, 32),
     ] {
         let count = experts * rows * cols;
         let weights = match format {
@@ -322,6 +327,7 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                     );
                     let old = d.allocate(slots * rows * 4).unwrap();
                     let new = upload(&mut d, &vec![f32::NAN; slots * rows]);
+                    let tiled = upload(&mut d, &vec![f32::NAN; slots * rows + 17]);
                     let p = Params::new(&[rows, cols, top, format, down, batch], &[]);
                     // SAFETY: native weights and scales use validated block widths;
                     // inputs match shared/per-slot mode and outputs cover every slot.
@@ -344,7 +350,31 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                             32,
                         )
                         .unwrap();
+                        k.run(
+                            &mut d,
+                            "expert_matmul_tiled",
+                            &[&tiled, &weights, &scales, &factors, &input, &groups, &tiles],
+                            p,
+                            rows.div_ceil(32) * max_tiles * 128,
+                            128,
+                        )
+                        .unwrap();
                     }
+                    let tiled_values = read(&mut d, &tiled);
+                    let reference = read(&mut d, &new);
+                    for (i, (&a, &b)) in tiled_values.iter().zip(&reference).enumerate() {
+                        assert_eq!(
+                            a.to_bits(),
+                            b.to_bits(),
+                            "format={format} rows={rows} cols={cols} batch={batch} sparse={sparse} down={down} index={i}"
+                        );
+                        assert!(a.is_finite());
+                    }
+                    assert!(
+                        tiled_values[slots * rows..]
+                            .iter()
+                            .all(|v| v.to_bits() == f32::NAN.to_bits())
+                    );
                     close(&read(&mut d, &new), &read(&mut d, &old), 0.0002);
                     if rows % 2 == 0 && down == 0 {
                         let width = rows / 2;
@@ -1513,4 +1543,154 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
         }
     }
     close(&read(&mut device, &output), &expected, 0.00001);
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn projection_scheduling_preserves_every_output_bit() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    // Wide exponents, cancellation, tails, dtype conversions, and nonzero input
+    // offsets exercise arithmetic that a greedy-token comparison can miss.
+    let values = |n: usize, seed: u32| -> Vec<f32> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let sign = if state & 1 == 0 { 1. } else { -1. };
+                sign * ((state >> 8) % 1024) as f32 / 1024. * 2f32.powi((state % 13) as i32 - 6)
+            })
+            .collect()
+    };
+    for dtype in 0..3 {
+        for (rows, cols) in [
+            (1usize, 4usize),
+            (7, 132),
+            (24, 2304),
+            (64, 4608),
+            (127, 128),
+            (128, 256),
+            (131, 2304),
+            (384, 4608),
+            (37, 29),
+        ] {
+            let w = values(rows * cols, 91);
+            let weights = match dtype {
+                0 => upload(&mut d, &w),
+                1 => d
+                    .upload(
+                        &w.iter()
+                            .flat_map(|v| half::bf16::from_f32(*v).to_bits().to_le_bytes())
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                _ => d
+                    .upload(
+                        &w.iter()
+                            .flat_map(|v| half::f16::from_f32(*v).to_bits().to_le_bytes())
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+            };
+            for batch in [1usize, 2, 7, 8, 15, 16, 17, 31, 32, 33] {
+                for offset in [0usize, 12] {
+                    let input = upload(&mut d, &values(offset + batch * cols, 37));
+                    let initial = vec![f32::NAN; batch * rows + 17];
+                    let old = upload(&mut d, &initial);
+                    let new = upload(&mut d, &initial);
+                    let p = Params::new(&[rows, cols, dtype, batch, offset], &[]);
+                    if batch == 1 {
+                        // SAFETY: group size only changes placement of independent
+                        // SIMD rows. The scalar ABI supports any column count.
+                        unsafe {
+                            k.run(
+                                &mut d,
+                                "matvec",
+                                &[&old, &weights, &input],
+                                p,
+                                rows * 32,
+                                128,
+                            )
+                            .unwrap();
+                            k.run(
+                                &mut d,
+                                "matvec",
+                                &[&new, &weights, &input],
+                                p,
+                                rows * 32,
+                                32,
+                            )
+                            .unwrap();
+                        }
+                        assert_eq!(
+                            d.read(&new).unwrap(),
+                            d.read(&old).unwrap(),
+                            "scalar threadgroup placement changed output bits"
+                        );
+                    }
+                    if batch == 1 && cols % 4 != 0 {
+                        continue;
+                    }
+                    // SAFETY: padded outputs include sentinel guards. Packed vector
+                    // inputs have four-float aligned offsets/columns. Matrix tiles
+                    // guard all row, token, and reduction tails.
+                    unsafe {
+                        if batch == 1 {
+                            k.run(
+                                &mut d,
+                                "matvec4",
+                                &[&old, &weights, &input],
+                                p,
+                                rows.div_ceil(4) * 32,
+                                128,
+                            )
+                            .unwrap();
+                            k.run(
+                                &mut d,
+                                "matvec_packed",
+                                &[&new, &weights, &input],
+                                p,
+                                rows * 32,
+                                128,
+                            )
+                            .unwrap();
+                        } else {
+                            k.run(
+                                &mut d,
+                                "matmul",
+                                &[&old, &weights, &input],
+                                p,
+                                rows.div_ceil(8) * batch.div_ceil(8) * 32,
+                                32,
+                            )
+                            .unwrap();
+                            k.run(
+                                &mut d,
+                                "matmul_tiled",
+                                &[&new, &weights, &input],
+                                p,
+                                rows.div_ceil(32) * batch.div_ceil(16) * 256,
+                                256,
+                            )
+                            .unwrap();
+                        }
+                    }
+                    let expected = read(&mut d, &old);
+                    let actual = read(&mut d, &new);
+                    for (i, (&a, &b)) in actual.iter().zip(&expected).enumerate() {
+                        assert_eq!(
+                            a.to_bits(),
+                            b.to_bits(),
+                            "dtype={dtype} rows={rows} cols={cols} batch={batch} offset={offset} index={i}: {a} != {b}"
+                        );
+                        if i < batch * rows {
+                            assert!(a.is_finite());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

@@ -274,29 +274,36 @@ impl<A: Accelerator> Inkling<A> {
     ) -> Result<A::Buffer> {
         let w = self.weights[name].clone();
         let y = self.alloc(rows * self.batch)?;
+        // Keep the original scalar/packed boundary: their reduction orders differ.
+        // Scheduling changes must not switch a scalar projection to packed dots.
         let vectorized = cols % 4 == 0 && rows >= 128;
         if self.batch > 1 {
+            let tiled = self.batch >= 16;
             self.run(
-                "matmul",
+                if tiled { "matmul_tiled" } else { "matmul" },
                 &[&y, &w.buffer, x],
                 &[rows, cols, w.dtype, self.batch, offset],
                 &[],
-                rows.div_ceil(8) * self.batch.div_ceil(8) * 32,
-                32,
+                if tiled {
+                    rows.div_ceil(32) * self.batch.div_ceil(16) * 256
+                } else {
+                    rows.div_ceil(8) * self.batch.div_ceil(8) * 32
+                },
+                if tiled { 256 } else { 32 },
             )?;
             return Ok(y);
         }
         self.run(
-            if vectorized { "matvec4" } else { "matvec" },
+            if vectorized {
+                "matvec_packed"
+            } else {
+                "matvec"
+            },
             &[&y, &w.buffer, x],
             &[rows, cols, w.dtype, 1, offset],
             &[],
-            if vectorized {
-                rows.div_ceil(4) * 32
-            } else {
-                rows * 32
-            },
-            128,
+            rows * 32,
+            if rows < 128 { 32 } else { 128 },
         )?;
         Ok(y)
     }
@@ -716,12 +723,12 @@ impl<A: Accelerator> Inkling<A> {
         let y = self.alloc(output_rows * top * self.batch)?;
         if let Some(groups) = groups {
             self.run(
-                "expert_matmul",
+                "expert_matmul_tiled",
                 &[&y, &w, &scales, &factors, x, &groups.slots, &groups.tiles],
                 &[rows, cols, top, format, usize::from(down), self.batch],
                 &caps,
-                rows.div_ceil(8) * groups.max_tiles * 32,
-                32,
+                rows.div_ceil(32) * groups.max_tiles * 128,
+                128,
             )?;
         } else {
             self.run(
