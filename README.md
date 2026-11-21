@@ -3,7 +3,8 @@
 rink runs [Inkling 2 Mini](https://thinkingmachines.ai/news/inkling-2-mini/)
 locally on Apple silicon.
 
-The current version supports Inkling 2 Mini and Metal. It does not support image input or CUDA.
+The current version supports Inkling 2 Mini and Metal. It does not support image
+input, CUDA, or other models (yet).
 
 ## Requirements
 
@@ -56,3 +57,7 @@ The KV cache uses FP16. Conversation history stays in memory until reset or exit
 Use `cargo run --release -- chat --help` to see all options.
 
 Inference supports up a 1 million token context window.
+
+## AI disclosure
+
+The vast majority of this code was written by GPT 6 Astra with human guidance.
