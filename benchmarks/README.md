@@ -346,6 +346,64 @@ Run isolated projection measurements with:
 cargo run --release -p rink-inkling --example bench_projections
 ```
 
+## Prefetch and parallel residual reads
+
+Revision `df78ec0` reduces decode latency in two places:
+
+- Scalar projections load four successive lane inputs before consuming them in
+  their original order. Weight conversion, multiplication, and summation stay the
+  same. The scalar/packed projection boundary is unchanged.
+- Residual reads also prefetch inputs. Several threadgroups repeat the same score
+  calculation, then each writes a separate set of output channels. No reduction is
+  split across groups. Native decode uses eight output shards; prompt batches of
+  eight or more tokens use four. Small hidden widths use fewer shards.
+
+Fresh M4 Max medians, with three trials per prompt length, 32 decode tokens per
+trial, FP16 caches, and a 262,144-token capacity:
+
+| Prompt tokens | Before prefill tok/s | After prefill tok/s | Before decode tok/s | After decode tok/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 151.43 | 152.30 | 27.51 | 34.38 |
+| 128 | 152.35 | 154.60 | 25.91 | 31.32 |
+| 1,024 | 133.57 | 134.93 | 25.35 | 30.99 |
+
+Decoding improves by 21–25%. Prefill changes by only 0.6–1.5%; treat it as roughly
+unchanged. All 288 generated token IDs match. Decode still uses zero buffer
+allocations, 1,737 dispatches, one encoder/command buffer, and eight readback bytes
+per token. Steady-state Metal allocations remain 27.17 GiB. Loading is excluded;
+the first prompt's allocation cost is included. Before and after runs are
+sequential, with filesystem and shader-cache state uncontrolled.
+
+- [Before](m4-max-prefetch-before.json): `277cfbe`, with engine code from `f090215`.
+- [After](m4-max-prefetch-after.json): `df78ec0`.
+- [Baseline kernel profile](m4-max-prefetch-profile-before.json): sampled diagnostic
+  intervals, with profiling overhead.
+- [Isolated kernel timings](m4-max-prefetch-kernels.json): includes scalar
+  projections and residual reads with one, four, and eight output shards. Repeated
+  buffers can remain cached, so use the full-model runs to establish throughput.
+
+All 32 workspace tests pass, as do formatting and Clippy checks. Scalar prefetch
+must match every output bit across three weight dtypes, offsets, varied magnitudes,
+and column tails. Residual tests preserve the original input distribution and add
+wider magnitudes, partial prefetch groups, batch sizes 1/3/32, bank/query offsets,
+one/four/eight shards, and output guards. No numerical tolerance was loosened.
+
+The [FP16](m4-max-prefetch-logits-f16.json) and
+[FP32](m4-max-prefetch-logits-f32.json) full-checkpoint comparisons match all
+49,214,268 logits bit for bit at 246 positions. They reuse the reference snapshots from
+`8c179d0` that `f090215` already matched above; each result records the snapshot's
+SHA-256. The three histories include an 8,192-token prompt, 32 continuation tokens
+per history, chunk and sliding-window boundaries, and resets. This establishes
+agreement on those histories on the M4 Max, using 16K cache capacity.
+
+Use the comparison and isolated-kernel commands above to reproduce these checks.
+For full-model throughput, run each revision with:
+
+```sh
+cargo run --release -- bench --prompt-tokens 32,128,1024 --decode-tokens 32 \
+  --repetitions 3 --context 262144 --kv-cache f16 > benchmark.json
+```
+
 ## Reproduce
 
 Build in release mode and run with the same local checkpoint:
@@ -436,8 +494,8 @@ parts of elapsed time; they overlap and must not be summed into a speedup estima
 | RMS normalization | 202 | 5.0 |
 | Expert routing | 48 | 3.5 |
 
-Those three follow-up changes, residual/SwiGLU fusions, and projection scheduling
-changes are implemented above.
+Those three follow-up changes, residual/SwiGLU fusions, projection scheduling,
+prefetch, and parallel residual output changes are implemented above.
 Further experiments include combining independent attention projections, fusing
 K/V convolution with normalization and cache updates during decoding, and tuning
 matrix tiles and grouping thresholds across more prompt distributions. The earlier
