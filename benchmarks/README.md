@@ -535,6 +535,86 @@ cargo run --release -- bench --prompt-tokens 32,128,256,512,1024 --decode-tokens
   --repetitions 3 --context 262144 --kv-cache f16 > benchmark.json
 ```
 
+## Native decode projections and exact FP4 tables
+
+Revision `5803d6e` speeds up single-token projections without changing their
+arithmetic:
+
+- Each NVFP4 matrix gets a table of the exact float32 value for every expert,
+  scale byte, and weight code. Metal builds the table once at load time, using
+  the original ordered multiplications. Decode retains the original four-wide
+  dots, SIMD reductions, activation functions, and native packed weight buffers.
+- BF16 matrix-vector kernels specialize the common input widths. Small
+  projections retain scalar sums; larger projections retain packed dots.
+  Other widths and dtypes retain the generic kernels.
+- Native MXFP8 gate/up and down projections use fixed dimensions. Weight
+  decoding, scaling, dot products, and reduction order are unchanged.
+
+Fresh M4 Max medians use three trials per prompt length, 64 decode tokens per
+trial, FP16 caches, and a 262,144-token capacity. Loading is excluded. The fresh
+baseline covers the three lengths below; the candidate also measures 256 and
+512 tokens.
+
+| Prompt tokens | Before prefill tok/s | After prefill tok/s | Before decode tok/s | After decode tok/s | Decode gain |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 193.69 | 194.63 | 35.53 | 39.26 | 10.5% |
+| 128 | 195.94 | 196.22 | 33.38 | 37.58 | 12.6% |
+| 1,024 | 165.56 | 160.38 | 32.46 | 36.19 | 11.5% |
+
+Decode improves by 10.5–12.6% on the fresh comparison lengths. All 576
+continuation token IDs in those paired trials match, and all 960 IDs in the
+candidate's five-length run match the previously recorded `80340a6` results.
+The 1,024-token prefill median is 3.1% lower in this run; the shorter prefill
+medians change by less than 0.5%. These are measurements on one device, not a
+claim of unchanged prefill performance.
+
+The tables add 80 MiB for this checkpoint: 40 NVFP4 matrices, each with 128
+experts and 4,096 float32 entries per expert. Table construction adds 40 load-time
+dispatches and synchronizations. Steady-state decode still has zero allocations,
+1,737 dispatches, one encoder/command buffer, and eight readback bytes per token.
+No checkpoint files are changed. Batched prefill kernels are unchanged; these
+measurements do not establish a prefill speedup.
+
+All 34 workspace tests pass, including Metal hardware tests, as do formatting
+and Clippy checks. Added checks cover every FP4 code and FP8 scale byte, signed
+zero, output guards, shared and per-route inputs, sparse routes, short batches,
+native MXFP8 dimensions, dense row tails, and input offsets. No numerical
+tolerance was loosened.
+
+Full-checkpoint comparisons match all 49,214,268 logits bit for bit across FP16
+and FP32 cache runs. The three histories include an 8,192-token prompt and 32
+continuation tokens per history, with chunk/ring boundaries and resets. They
+reuse the `8c179d0` snapshots previously matched by `80340a6`; each result records
+the snapshot SHA-256. The full-model comparisons use 16K cache capacity; the
+existing native-geometry 256K attention test is separate.
+
+- [Before](m4-max-native-decode-before.json): `bac7d73`, engine `80340a6`.
+- [After](m4-max-native-decode-after.json): `5803d6e`.
+- [FP16 logits](m4-max-native-decode-logits-f16.json).
+- [FP32 logits](m4-max-native-decode-logits-f32.json).
+- [Isolated kernels](m4-max-native-decode-kernels.json): repeated buffers can
+  remain cached; do not treat these timings as full-model throughput.
+- [Candidate kernel profile](m4-max-native-decode-profile.json): diagnostic
+  stage-boundary intervals include profiling overhead and can overlap.
+
+This pass did not reach the 2x decode target. Experiments with loop unrolling,
+smaller shared FP4 tables, paired-code tables, residual-read specialization,
+and a combined attention-projection dispatch did not justify inclusion. In
+longer trials, combining the six attention projections reduced dispatches by
+240 per token but improved median decode by only 0.6%, within measurement noise.
+The original execution graph is retained.
+
+Reproduce throughput on each revision with:
+
+```sh
+cargo run --release -- bench --prompt-tokens 32,128,1024 --decode-tokens 64 \
+  --repetitions 3 --context 262144 --kv-cache f16 > benchmark.json
+```
+
+Use the comparison and isolated-kernel commands above for numerical validation
+and kernel experiments. Runs execute sequentially. Filesystem and shader-cache
+state are uncontrolled, and results apply to this M4 Max and workload.
+
 ## Reproduce
 
 Build in release mode and run with the same local checkpoint:
