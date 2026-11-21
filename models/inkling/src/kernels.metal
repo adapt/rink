@@ -99,6 +99,30 @@ kernel void matmul_tiled(device float* y [[buffer(0)]], device const uchar* w [[
     simdgroup_store(sum,result+sg*64,8);threadgroup_barrier(mem_flags::mem_threadgroup);
     for(uint i=lane;i<64;i+=32){uint t=token+ar+i/8,r=row+bc+i%8;if(t<p.u[3] && r<p.u[0])y[t*p.u[0]+r]=result[sg*64+i];}
 }
+// Four-wide staging with the original ordered matrix accumulation.
+kernel void matmul_packed(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const float* x [[buffer(2)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float a[16*32],b[32*32],result[8*64];
+    uint row_tiles=(p.u[0]+31)/32,row=(group%row_tiles)*32,token=(group/row_tiles)*16;
+    uint sg=tid/32,ar=(sg/4)*8,bc=(sg%4)*8;
+    simdgroup_float8x8 sum=make_filled_simdgroup_matrix<float,8,8>(0.f);
+    for(uint base=0;base<p.u[1];base+=32){
+        if(tid<128){uint r=tid/8,c=(tid%8)*4;float4 av=0;
+            if(token+r<p.u[3]){uint src=p.u[4]+(token+r)*p.u[1]+base+c;
+                if(base+c+4<=p.u[1])av=float4(*((device const packed_float4*)(x+src)));
+                else for(uint j=0;j<4;j++)if(base+c+j<p.u[1])av[j]=x[src+j];}
+            for(uint j=0;j<4;j++)a[r*32+c+j]=av[j];}
+        uint r=tid/8,c=(tid%8)*4;float4 bv=0;
+        if(row+r<p.u[0]){uint src=(row+r)*p.u[1]+base+c;
+            if(base+c+4<=p.u[1])bv=weight4(w,src,p.u[2]);
+            else for(uint j=0;j<4;j++)if(base+c+j<p.u[1])bv[j]=weight(w,src+j,p.u[2]);}
+        for(uint j=0;j<4;j++)b[(c+j)*32+r]=bv[j];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for(uint k=0;k<32;k+=8){simdgroup_float8x8 av,bv;simdgroup_load(av,a+ar*32+k,32);simdgroup_load(bv,b+k*32+bc,32);simdgroup_multiply_accumulate(sum,av,bv,sum);}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    simdgroup_store(sum,result+sg*64,8);threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint i=lane;i<64;i+=32){uint t=token+ar+i/8,r=row+bc+i%8;if(t<p.u[3] && r<p.u[0])y[t*p.u[0]+r]=result[sg*64+i];}
+}
 // width, rows, weighted; epsilon
 kernel void rms(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* w [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint row=t/32, n=p.u[0]; if(row>=p.u[1]) return;

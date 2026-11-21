@@ -1599,6 +1599,10 @@ fn projection_scheduling_preserves_every_output_bit() {
     for dtype in 0..3 {
         for (rows, cols) in [
             (1usize, 4usize),
+            (5, 1),
+            (9, 3),
+            (17, 31),
+            (33, 33),
             (7, 132),
             (24, 2304),
             (64, 4608),
@@ -1627,7 +1631,8 @@ fn projection_scheduling_preserves_every_output_bit() {
                     .unwrap(),
             };
             for batch in [1usize, 2, 7, 8, 15, 16, 17, 31, 32, 33] {
-                for offset in [0usize, 12] {
+                let offsets: &[usize] = if batch == 1 { &[0, 12] } else { &[0, 1, 3, 12] };
+                for &offset in offsets {
                     let input = upload(&mut d, &values(offset + batch * cols, 37));
                     let initial = vec![f32::NAN; batch * rows + 17];
                     let old = upload(&mut d, &initial);
@@ -1738,6 +1743,28 @@ fn projection_scheduling_preserves_every_output_bit() {
                         if i < batch * rows {
                             assert!(a.is_finite());
                         }
+                    }
+                    if batch > 1 {
+                        let name = "matmul_packed";
+                        let packed = upload(&mut d, &initial);
+                        // SAFETY: four-wide staging handles partial vectors;
+                        // output tile geometry and guards are unchanged.
+                        unsafe {
+                            k.run(
+                                &mut d,
+                                name,
+                                &[&packed, &weights, &input],
+                                p,
+                                rows.div_ceil(32) * batch.div_ceil(16) * 256,
+                                256,
+                            )
+                            .unwrap();
+                        }
+                        assert_eq!(
+                            d.read(&packed).unwrap(),
+                            d.read(&old).unwrap(),
+                            "{name}: dtype={dtype} rows={rows} cols={cols} batch={batch} offset={offset}"
+                        );
                     }
                 }
             }

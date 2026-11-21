@@ -65,7 +65,7 @@ mod metal {
                 .collect();
             let w = d.upload(bytemuck::cast_slice(&data))?;
             drop(data);
-            for batch in [1usize, 32] {
+            for batch in [1usize, 2, 8, 16, 32] {
                 if rows > 100000 && batch > 1 {
                     continue;
                 }
@@ -84,6 +84,11 @@ mod metal {
                         ("matmul", rows.div_ceil(8) * batch.div_ceil(8) * 32, 32),
                         (
                             "matmul_tiled",
+                            rows.div_ceil(32) * batch.div_ceil(16) * 256,
+                            256,
+                        ),
+                        (
+                            "matmul_packed",
                             rows.div_ceil(32) * batch.div_ceil(16) * 256,
                             256,
                         ),

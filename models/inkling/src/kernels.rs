@@ -44,6 +44,7 @@ impl<A: Accelerator> Kernels<A> {
             "matvec_packed",
             "matmul",
             "matmul_tiled",
+            "matmul_packed",
             "cache_write",
             "attention_partition",
             "attention_finish",

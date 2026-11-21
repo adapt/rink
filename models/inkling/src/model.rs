@@ -278,18 +278,15 @@ impl<A: Accelerator> Inkling<A> {
         // Scheduling changes must not switch a scalar projection to packed dots.
         let vectorized = cols % 4 == 0 && rows >= 128;
         if self.batch > 1 {
-            let tiled = self.batch >= 16;
+            // Four-wide staging preserves each 8x8 accumulator's original
+            // operation order, including short and partially filled tiles.
             self.run(
-                if tiled { "matmul_tiled" } else { "matmul" },
+                "matmul_packed",
                 &[&y, &w.buffer, x],
                 &[rows, cols, w.dtype, self.batch, offset],
                 &[],
-                if tiled {
-                    rows.div_ceil(32) * self.batch.div_ceil(16) * 256
-                } else {
-                    rows.div_ceil(8) * self.batch.div_ceil(8) * 32
-                },
-                if tiled { 256 } else { 32 },
+                rows.div_ceil(32) * self.batch.div_ceil(16) * 256,
+                256,
             )?;
             return Ok(y);
         }
