@@ -44,6 +44,14 @@ kernel void matvec4(device float* y [[buffer(0)]], device const uchar* w [[buffe
         for(uint r=0;r<4 && row+r<p.u[0];r++)sum[r]+=dot(weight4(w,(row+r)*cols+c,p.u[2]),v);}
     for(uint r=0;r<4;r++){float v=simd_sum(sum[r]);if(lane==0 && row+r<p.u[0])y[row+r]=v;}
 }
+// One row per SIMD group exposes more parallel work for narrow projections.
+// Keep the vector dot and lane reduction order of matvec4.
+kernel void matvec1(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const float* x [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint row=t/32,cols=p.u[1];if(row>=p.u[0])return;float sum=0;
+    for(uint c=lane*4;c<cols;c+=128)sum+=dot(weight4(w,row*cols+c,p.u[2]),*((device const float4*)(x+p.u[4]+c)));
+    sum=simd_sum(sum);if(lane==0)y[row]=sum;
+}
+
 // X[batch,cols] * W[rows,cols]^T. Each SIMD group computes an 8x8 tile,
 // staging 32 columns at a time and accumulating in float32 matrix registers.
 kernel void matmul(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const float* x [[buffer(2)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
@@ -111,6 +119,22 @@ kernel void block_read_parallel(device float* y [[buffer(0)]], device const floa
         device const float* block=j+1==b?live:blocks+(j+p.u[3])*n*p.u[4];
         float ss=0,dot=0;for(uint i=lane;i<n;i+=32){float v=block[i];ss+=v*v;dot+=v*query[p.u[2]+i];}
         float norm=rsqrt(simd_sum(ss)/float(n)+1.e-6f),s=simd_sum(dot)*norm*rsqrt(float(n));
+        if(lane==0){r[j]=norm;score[j]=s;}
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid==0){float mx=-INFINITY,total=0;for(uint j=0;j<b;j++)mx=max(mx,score[j]);for(uint j=0;j<b;j++){score[j]=exp(score[j]-mx);total+=score[j];}den=total;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint i=tid;i<n;i+=256){float v=0;for(uint j=0;j<b;j++){device const float* block=j+1==b?live:blocks+(j+p.u[3])*n*p.u[4];v+=block[i]*r[j]*score[j]/den;}y[i]=v;}
+}
+// Aligned hidden widths: load four channels at a time during block reductions.
+kernel void block_read_vector(device float* y [[buffer(0)]], device const float* blocks [[buffer(1)]], device const float* live [[buffer(2)]], device const float* query [[buffer(3)]], constant Params& p [[buffer(15)]], uint token [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float r[32],score[32],den;
+    uint n=p.u[0],b=p.u[1],sg=tid/32;
+    if(token>=p.u[4])return;y+=token*n;live+=token*n;blocks+=token*n;
+    for(uint j=sg;j<b;j+=8){
+        device const float* block=j+1==b?live:blocks+(j+p.u[3])*n*p.u[4];
+        float ss=0,projection=0;for(uint i=lane*4;i<n;i+=128){float4 v=*((device const float4*)(block+i));ss+=dot(v,v);projection+=dot(v,*((device const float4*)(query+p.u[2]+i)));}
+        float norm=rsqrt(simd_sum(ss)/float(n)+1.e-6f),s=simd_sum(projection)*norm*rsqrt(float(n));
         if(lane==0){r[j]=norm;score[j]=s;}
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -306,6 +330,30 @@ kernel void expert_swiglu_matvec(device float* y [[buffer(0)]], device const uch
     }else{for(uint c=lane;c<cols;c+=32){sum.x+=((device const float*)w)[base+c]*x[c];sum.y+=((device const float*)w)[base+cols+c]*x[c];}}
     float gate=simd_sum(sum.x),up=simd_sum(sum.y);if(lane==0)y[out]=expert_activation(gate,up,p.f[0],p.f[1]);
 }
+// Native blocks are at least 16 columns. Adjacent four-value packs share a scale.
+float4 expert_weight_scaled(device const uchar* w,uint idx,uint format,float scale,float factor) {
+    float4 v;const float lut[8]={0.f,.5f,1.f,1.5f,2.f,3.f,4.f,6.f};
+    if(format==0){uint codes=*((device const ushort*)(w+idx/2));for(uint j=0;j<4;j++){uint code=(codes>>(4*j))&15;v[j]=lut[code&7]*(code&8?-1.f:1.f)*scale*factor;}}
+    else{uchar4 codes=*((device const uchar4*)(w+idx));for(uint j=0;j<4;j++)v[j]=fp8(codes[j])*scale;}
+    return v;
+}
+
+// Same ABI as expert_swiglu_matvec. Reuse one native block scale for 16
+// adjacent columns per lane; float32 weights retain the scalar fallback.
+kernel void expert_swiglu_wide16(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const float* routing [[buffer(5)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint width=p.u[0]/2,out=t/32,slot=out/width,row=(out%width)*2,token=slot/p.u[2];if(token>=p.u[5])return;
+    uint expert=uint(routing[2*slot]),cols=p.u[1],base=(expert*p.u[0]+row)*cols;float2 sum=0;x+=token*cols;
+    if(p.u[3]<2){float factor=p.u[3]==0?factors[expert]:1.f;
+        for(uint c=lane*16;c<cols;c+=512){
+            float s0=p.u[3]==0?fp8(scales[(base+c)/16]):scale8(scales[(base+c)/32]);
+            float s1=p.u[3]==0?fp8(scales[(base+cols+c)/16]):scale8(scales[(base+cols+c)/32]);
+            for(uint j=0;j<16;j+=4){float4 input=*((device const float4*)(x+c+j));
+                sum.x+=dot(expert_weight_scaled(w,base+c+j,p.u[3],s0,factor),input);
+                sum.y+=dot(expert_weight_scaled(w,base+cols+c+j,p.u[3],s1,factor),input);}}
+    }else{for(uint c=lane;c<cols;c+=32){sum.x+=((device const float*)w)[base+c]*x[c];sum.y+=((device const float*)w)[base+cols+c]*x[c];}}
+    float gate=simd_sum(sum.x),up=simd_sum(sum.y);if(lane==0)y[out]=expert_activation(gate,up,p.f[0],p.f[1]);
+}
+
 // Same geometry as expert_matvec. Gather grouped inputs, multiply each eight-slot
 // tile by its expert's weights, and scatter back to [token, selected slot, row].
 kernel void expert_matmul(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const uint* groups [[buffer(5)]], device const uint* tiles [[buffer(6)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
@@ -375,6 +423,57 @@ kernel void attention_partition(device float* out [[buffer(0)]], device const fl
     for(uint i=tid;i<d;i+=128){float sum=0;for(uint j=0;j<min(128u,n-start);j++){uint kp=pos+1-n+start+j;
         bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:kp%p.u[4])*p.u[1]+kh)*d;
         sum+=scores[j]*kv_read(values,new_values,offset+i,fresh,p.u[10]);}out[dest+2+i]=sum;}
+}
+// Three query heads share one KV head. Reuse each key/value load across their
+// independent scores, preserving each head's reduction and weighted-sum order.
+// Same partition layout and parameter ABI as attention_partition; 128 threads
+// per (token, KV head, partition). Requires q_heads == 3 * kv_heads.
+kernel void attention_partition_gqa(device float* out [[buffer(0)]], device const float* q [[buffer(1)]], device const uchar* keys [[buffer(2)]], device const uchar* values [[buffer(3)]], device const float* new_keys [[buffer(4)]], device const float* new_values [[buffer(5)]], device const float* rel [[buffer(6)]], device const float* profiles [[buffer(7)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float scores[384],maxima[12],totals[12];
+    uint parts=p.u[8],row=group/parts,part=group%parts,kh=row%p.u[1],token=row/p.u[1],d=p.u[2];
+    uint query=token*p.u[0]+kh*3,pos=p.u[3]+token,n=min(pos+1,p.u[4]),start=part*128,sg=tid/32;
+    if(start>=n){for(uint h=0;h<3;h++){uint dest=((query+h)*parts+part)*(d+2);if(tid==0){out[dest]=-INFINITY;out[dest+1]=0;}for(uint i=tid;i<d;i+=128)out[dest+2+i]=0;}return;}
+    for(uint j=sg;j<128;j+=4){uint at=start+j;float3 score=-INFINITY;
+        if(at<n){uint kp=pos+1-n+at,dist=pos-kp;bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:kp%p.u[4])*p.u[1]+kh)*d;
+            float3 product=0;for(uint i=lane;i<d;i+=32){float key=kv_read(keys,new_keys,offset+i,fresh,p.u[10]);product+=float3(q[query*d+i],q[(query+1)*d+i],q[(query+2)*d+i])*key;}
+            score=float3(simd_sum(product.x),simd_sum(product.y),simd_sum(product.z))*rsqrt(float(d));
+            float3 bias=0;if(dist<p.u[7])for(uint i=lane;i<p.u[6];i+=32){float v=profiles[i*p.u[7]+dist];bias+=float3(rel[query*p.u[6]+i],rel[(query+1)*p.u[6]+i],rel[(query+2)*p.u[6]+i])*v;}
+            score+=float3(simd_sum(bias.x),simd_sum(bias.y),simd_sum(bias.z));
+        }
+        if(lane==0){scores[j]=score.x;scores[128+j]=score.y;scores[256+j]=score.z;}
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint h=0;h<3;h++){float mx=simd_max(scores[h*128+tid]);if(lane==0)maxima[h*4+sg]=mx;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint h=0;h<3;h++){uint b=h*4;float mx=max(max(maxima[b],maxima[b+1]),max(maxima[b+2],maxima[b+3]));float weight=exp(scores[h*128+tid]-mx);scores[h*128+tid]=weight;float den=simd_sum(weight);if(lane==0)totals[b+sg]=den;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid==0)for(uint h=0;h<3;h++){uint b=h*4,dest=((query+h)*parts+part)*(d+2);out[dest]=max(max(maxima[b],maxima[b+1]),max(maxima[b+2],maxima[b+3]));out[dest+1]=totals[b]+totals[b+1]+totals[b+2]+totals[b+3];}
+    for(uint i=tid;i<d;i+=128){float3 sum=0;for(uint j=0;j<min(128u,n-start);j++){uint kp=pos+1-n+start+j;bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:kp%p.u[4])*p.u[1]+kh)*d;
+        float value=kv_read(values,new_values,offset+i,fresh,p.u[10]);sum+=float3(scores[j],scores[128+j],scores[256+j])*value;}
+        for(uint h=0;h<3;h++)out[((query+h)*parts+part)*(d+2)+2+i]=sum[h];}
+}
+// Cache partition scales and distribute output channels over 128 threads. The
+// first SIMD group retains attention_finish's denominator arithmetic, including
+// compensated sums. Up to 2048 partitions (256K positions); larger contexts use
+// attention_finish. One threadgroup per query head/token.
+kernel void attention_finish_cached(device float* y [[buffer(0)]], device const float* parts [[buffer(1)]], device const float* sinks [[buffer(2)]], device const float* gate [[buffer(3)]], constant Params& p [[buffer(15)]], uint query [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float scales[2048],maximum,denominator;
+    uint d=p.u[2],n=p.u[8],base=query*n*(d+2);if(query>=p.u[0]*p.u[9])return;
+    if(tid<32){float mx=sinks[query];for(uint j=lane;j<n;j+=32)mx=max(mx,parts[base+j*(d+2)]);mx=simd_max(mx);if(tid==0)maximum=mx;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint j=tid;j<n;j+=128)scales[j]=exp(parts[base+j*(d+2)]-maximum);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid<32){float den=0;
+        if(n<=128){for(uint j=lane;j<n;j+=32)den+=parts[base+j*(d+2)+1]*scales[j];}
+        else{float error=0;for(uint j=lane;j<n;j+=32){float term=parts[base+j*(d+2)+1]*scales[j]-error;float next=den+term;error=(next-den)-term;den=next;}}
+        den=simd_sum(den);if(tid==0)denominator=den+exp(sinks[query]-maximum);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint i=tid;i<d;i+=128){float sum=0;
+        if(n<=128){for(uint j=0;j<n;j++)sum+=parts[base+j*(d+2)+2+i]*scales[j];}
+        else{float error=0;for(uint j=0;j<n;j++){float term=parts[base+j*(d+2)+2+i]*scales[j]-error;float next=sum+term;error=(next-sum)-term;sum=next;}}
+        y[query*d+i]=(sum/denominator)/(1.f+exp(-gate[query*d+i]));
+    }
 }
 kernel void attention_finish(device float* y [[buffer(0)]], device const float* parts [[buffer(1)]], device const float* sinks [[buffer(2)]], device const float* gate [[buffer(3)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint query=t/32,d=p.u[2],n=p.u[8];if(query>=p.u[0]*p.u[9])return;

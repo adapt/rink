@@ -149,6 +149,13 @@ Recorded M4 Max results, methodology, and remaining bottlenecks are in
 [the benchmark report](benchmarks/README.md), including before/after measurements
 and raw JSON for each optimization pass.
 
+Isolated kernel comparisons are available with `cargo run --release -p rink-inkling
+--example bench_kernels -- all` (or `dense`, `residual`, `expert`, `attention`).
+They compare the retained reference kernels with the optimized implementations;
+repeated weights can remain cached, so use full-model trials to establish throughput.
+The `compare_revisions` example records logits from one build and checks another
+build on identical token histories; see the benchmark report for the workflow.
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings

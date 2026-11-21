@@ -274,7 +274,7 @@ impl<A: Accelerator> Inkling<A> {
     ) -> Result<A::Buffer> {
         let w = self.weights[name].clone();
         let y = self.alloc(rows * self.batch)?;
-        let vectorized = cols % 4 == 0 && rows >= 128;
+        let vectorized = cols % 4 == 0;
         if self.batch > 1 {
             self.run(
                 "matmul",
@@ -287,16 +287,12 @@ impl<A: Accelerator> Inkling<A> {
             return Ok(y);
         }
         self.run(
-            if vectorized { "matvec4" } else { "matvec" },
+            if vectorized { "matvec1" } else { "matvec" },
             &[&y, &w.buffer, x],
             &[rows, cols, w.dtype, 1, offset],
             &[],
-            if vectorized {
-                rows.div_ceil(4) * 32
-            } else {
-                rows * 32
-            },
-            128,
+            rows * 32,
+            if rows <= 128 { 32 } else { 128 },
         )?;
         Ok(y)
     }
@@ -332,7 +328,11 @@ impl<A: Accelerator> Inkling<A> {
         let q = self.w(query);
         let y = self.alloc(n * self.batch)?;
         self.run(
-            "block_read_parallel",
+            if n % 4 == 0 && offset % 4 == 0 {
+                "block_read_vector"
+            } else {
+                "block_read_parallel"
+            },
             &[&y, &blocks.buffer, live, &q],
             &[n, blocks.count + 1, offset, blocks.offset, self.batch],
             &[],
@@ -651,22 +651,36 @@ impl<A: Accelerator> Inkling<A> {
         let partials =
             self.attention_workspace(self.batch * qh * capacity.div_ceil(128) * (d + 2))?;
         let profiles = self.w(&format!("{p}.rel_logits_proj.proj"));
+        // Sharing KV loads helps long decode scans and batched prefill. Short
+        // single-token scans need the extra parallelism of separate query heads.
+        let grouped = qh == 3 * kh && (self.batch >= 8 || n >= 2048);
         self.run(
-            "attention_partition",
+            if grouped {
+                "attention_partition_gqa"
+            } else {
+                "attention_partition"
+            },
             &[&partials, &q, &keys, &values, &k, &v, &r, &profiles],
             &geometry,
             &[],
-            self.batch * qh * parts * 128,
+            self.batch * if grouped { kh } else { qh } * parts * 128,
             128,
         )?;
         let gated = self.alloc(self.batch * qh * d)?;
+        let min_cached_parts = if self.batch == 1 { 8 } else { 16 };
+        let cached_scales = (min_cached_parts..=2048).contains(&parts);
+        let finish_group = if cached_scales { 128 } else { 32 };
         self.run(
-            "attention_finish",
+            if cached_scales {
+                "attention_finish_cached"
+            } else {
+                "attention_finish"
+            },
             &[&gated, &partials, &sink, &gate],
             &geometry,
             &[],
-            self.batch * qh * 32,
-            32,
+            self.batch * qh * finish_group,
+            finish_group,
         )?;
         self.run(
             "cache_write",
@@ -725,7 +739,9 @@ impl<A: Accelerator> Inkling<A> {
             )?;
         } else {
             self.run(
-                if fused {
+                if fused && format < 2 {
+                    "expert_swiglu_wide16"
+                } else if fused {
                     "expert_swiglu_matvec"
                 } else {
                     "expert_matvec"

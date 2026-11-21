@@ -380,6 +380,24 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                             &read(&mut d, &expected_vector),
                             0.000003,
                         );
+                        // SAFETY: native rows are multiples of 16/32; float32
+                        // tails use the scalar fallback. Slots retain their order.
+                        unsafe {
+                            k.run(
+                                &mut d,
+                                "expert_swiglu_wide16",
+                                &[&fused_vector, &weights, &scales, &factors, &input, &routing],
+                                fused,
+                                slots * width * 32,
+                                128,
+                            )
+                            .unwrap();
+                        }
+                        close(
+                            &read(&mut d, &fused_vector),
+                            &read(&mut d, &expected_vector),
+                            0.00001,
+                        );
                     }
                 }
             }
@@ -660,6 +678,67 @@ fn parallel_residual_reads_match_single_simd_with_offsets_and_tails() {
                     &read(&mut device, &expected),
                     0.000001,
                 );
+                if width % 4 == 0 {
+                    // SAFETY: aligned block rows and query offsets satisfy the vector ABI.
+                    unsafe {
+                        kernels
+                            .run(
+                                &mut device,
+                                "block_read_vector",
+                                &[&actual, &bank, &live, &query],
+                                params,
+                                batch * 256,
+                                256,
+                            )
+                            .unwrap();
+                    }
+                    let mut reference = Vec::new();
+                    for token in 0..batch {
+                        let states: Vec<&[f32]> = (0..blocks)
+                            .map(|j| {
+                                let base = if j + 1 == blocks {
+                                    token * width
+                                } else {
+                                    ((j + 3) * batch + token) * width
+                                };
+                                &values[base..base + width]
+                            })
+                            .collect();
+                        let norms: Vec<f64> = states
+                            .iter()
+                            .map(|row| {
+                                1. / (row.iter().map(|&v| (v as f64).powi(2)).sum::<f64>()
+                                    / width as f64
+                                    + 1e-6)
+                                    .sqrt()
+                            })
+                            .collect();
+                        let scores: Vec<f64> = states
+                            .iter()
+                            .zip(&norms)
+                            .map(|(row, &r)| {
+                                row.iter()
+                                    .zip(&values[width..2 * width])
+                                    .map(|(&v, &q)| v as f64 * q as f64)
+                                    .sum::<f64>()
+                                    * r
+                                    / (width as f64).sqrt()
+                            })
+                            .collect();
+                        let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                        let probabilities: Vec<f64> =
+                            scores.iter().map(|s| (s - max).exp()).collect();
+                        let den = probabilities.iter().sum::<f64>();
+                        reference.extend((0..width).map(|i| {
+                            states
+                                .iter()
+                                .enumerate()
+                                .map(|(j, row)| row[i] as f64 * norms[j] * probabilities[j] / den)
+                                .sum::<f64>() as f32
+                        }));
+                    }
+                    close(&read(&mut device, &actual), &reference, 0.000003);
+                }
             }
         }
     }
@@ -985,37 +1064,72 @@ fn gpu_argmax_handles_ties_tail_and_nonfinite_values() {
 fn vectorized_dense_projection_handles_row_and_column_tiles() {
     let mut d = Metal::new().unwrap();
     let k = Kernels::compile(&mut d).unwrap();
-    let (rows, cols) = (131, 132);
-    let x: Vec<f32> = (0..cols).map(|i| (i as f32 * 0.2).cos()).collect();
-    let w: Vec<half::bf16> = (0..rows * cols)
-        .map(|i| half::bf16::from_f32((i as f32 * 0.03).sin()))
-        .collect();
-    let weights = d
-        .upload(
-            &w.iter()
-                .flat_map(|v| v.to_bits().to_le_bytes())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
-    let input = upload(&mut d, &x);
-    let out = d.allocate(rows * 4).unwrap();
-    // SAFETY: rows may be partial, columns are a multiple of four; guarded 4-row tiles.
-    unsafe {
-        k.run(
-            &mut d,
-            "matvec4",
-            &[&out, &weights, &input],
-            Params::new(&[rows, cols, 1], &[]),
-            rows.div_ceil(4) * 32,
-            128,
-        )
-        .unwrap();
+    for (rows, cols) in [
+        (7usize, 4usize),
+        (24, 2304),
+        (64, 4608),
+        (131, 132),
+        (384, 2304),
+    ] {
+        for dtype in 0..3 {
+            let x: Vec<f32> = (0..cols)
+                .map(|i| ((i * 13 % 71) as f32 - 35.) / 128.)
+                .collect();
+            let w: Vec<f32> = (0..rows * cols)
+                .map(|i| ((i * 17 % 251) as f32 - 125.) / 1024.)
+                .collect();
+            let decoded: Vec<f32> = w
+                .iter()
+                .map(|&v| match dtype {
+                    1 => half::bf16::from_f32(v).to_f32(),
+                    2 => half::f16::from_f32(v).to_f32(),
+                    _ => v,
+                })
+                .collect();
+            let bytes: Vec<u8> = w
+                .iter()
+                .flat_map(|&v| match dtype {
+                    1 => half::bf16::from_f32(v).to_bits().to_le_bytes().to_vec(),
+                    2 => half::f16::from_f32(v).to_bits().to_le_bytes().to_vec(),
+                    _ => v.to_le_bytes().to_vec(),
+                })
+                .collect();
+            let weights = d.upload(&bytes).unwrap();
+            let mut inputs = vec![f32::NAN; 4];
+            inputs.extend(&x);
+            let input = upload(&mut d, &inputs);
+            let expected: Vec<f32> = decoded
+                .chunks_exact(cols)
+                .map(|row| {
+                    row.iter()
+                        .zip(&x)
+                        .map(|(&a, &b)| a as f64 * b as f64)
+                        .sum::<f64>() as f32
+                })
+                .collect();
+            for (name, tile) in [("matvec1", 1usize), ("matvec4", 4)] {
+                for group in [32, 128] {
+                    let out = upload(&mut d, &vec![f32::NAN; rows + 8]);
+                    // SAFETY: columns and input offset are four-aligned; row tails
+                    // are guarded, with sentinel outputs after the logical matrix.
+                    unsafe {
+                        k.run(
+                            &mut d,
+                            name,
+                            &[&out, &weights, &input],
+                            Params::new(&[rows, cols, dtype, 1, 4], &[]),
+                            rows.div_ceil(tile) * 32,
+                            group,
+                        )
+                        .unwrap();
+                    }
+                    let actual = read(&mut d, &out);
+                    close(&actual[..rows], &expected, 0.00003);
+                    assert!(actual[rows..].iter().all(|v| v.is_nan()));
+                }
+            }
+        }
     }
-    let expected: Vec<f32> = w
-        .chunks_exact(cols)
-        .map(|row| row.iter().zip(&x).map(|(a, b)| a.to_f32() * b).sum())
-        .collect();
-    close(&read(&mut d, &out), &expected, 0.00005);
 }
 
 #[test]
@@ -1172,6 +1286,42 @@ fn partitioned_attention_matches_scalar_with_tails_ring_and_causal_chunks() {
                 }
             }
             close(&read(&mut device, &out), &expected, 0.00001);
+            let original = read(&mut device, &out);
+            // SAFETY: every test uses three query heads per KV head and at most
+            // 2048 partitions. Exercise both cache precisions and causal ring tails.
+            unsafe {
+                kernels
+                    .run(
+                        &mut device,
+                        "attention_partition_gqa",
+                        &[
+                            &partial,
+                            &buffers[0],
+                            &buffers[1],
+                            &buffers[2],
+                            &buffers[3],
+                            &buffers[4],
+                            &buffers[5],
+                            &buffers[6],
+                        ],
+                        Params::new(&geometry, &[]),
+                        batch * kh * parts * 128,
+                        128,
+                    )
+                    .unwrap();
+                kernels
+                    .run(
+                        &mut device,
+                        "attention_finish_cached",
+                        &[&out, &partial, &buffers[7], &buffers[8]],
+                        Params::new(&geometry, &[]),
+                        batch * qh * 128,
+                        128,
+                    )
+                    .unwrap();
+            }
+            close(&read(&mut device, &out), &expected, 0.00001);
+            close(&read(&mut device, &out), &original, 0.000001);
         }
     }
 }
@@ -1511,6 +1661,39 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
                 expected.push((0.5 * numerator / denominator) as f32);
             }
         }
+    }
+    close(&read(&mut device, &output), &expected, 0.00001);
+    // SAFETY: the same 256K geometry satisfies grouped-query and cached-reduction ABIs.
+    unsafe {
+        kernels
+            .run(
+                &mut device,
+                "attention_partition_gqa",
+                &[
+                    &partials,
+                    &query,
+                    &keys,
+                    &values,
+                    &new_keys,
+                    &new_values,
+                    &rel,
+                    &profiles,
+                ],
+                geometry,
+                batch * kh * parts * 128,
+                128,
+            )
+            .unwrap();
+        kernels
+            .run(
+                &mut device,
+                "attention_finish_cached",
+                &[&output, &partials, &sinks, &gate],
+                geometry,
+                batch * qh * 128,
+                128,
+            )
+            .unwrap();
     }
     close(&read(&mut device, &output), &expected, 0.00001);
 }
