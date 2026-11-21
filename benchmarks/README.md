@@ -404,6 +404,67 @@ cargo run --release -- bench --prompt-tokens 32,128,1024 --decode-tokens 32 \
   --repetitions 3 --context 262144 --kv-cache f16 > benchmark.json
 ```
 
+## Four-wide staging for dense prompt projections
+
+Revision `3ad776b` loads four adjacent values at a time when it stages
+activations and dense weights for matrix multiplication. It retains the 16-token
+by 32-row tile, 32-column staging steps, float32 accumulators, and the original
+ordered 8-column matrix operations. Short batches now use this tile too. Partial
+vectors use scalar loads, and packed loads support unaligned input offsets.
+Prompt chunks remain 32 tokens. Single-token projections and precision are unchanged.
+
+Fresh M4 Max medians, with three trials per prompt length, 32 decode tokens per
+trial, FP16 caches, and a 262,144-token capacity:
+
+| Prompt tokens | Before prefill tok/s | After prefill tok/s | Before decode tok/s | After decode tok/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 34.93 | 77.51 | 36.60 | 36.80 |
+| 16 | 92.61 | 126.12 | 36.58 | 36.51 |
+| 32 | 154.11 | 196.20 | 35.75 | 35.80 |
+| 128 | 155.57 | 197.76 | 32.48 | 32.63 |
+| 1,024 | 135.32 | 165.16 | 32.25 | 32.25 |
+
+Prefill improves by 22–27% at 32–1,024 tokens, 36% at 16 tokens, and 2.22× at eight
+tokens. Decode changes by less than 0.6%; treat it as unchanged. All 480 generated
+token IDs match. Decode retains zero buffer allocations, 1,737 dispatches, one
+encoder/command buffer, and eight readback bytes per token. Allocation counters and
+Metal memory at every recorded phase boundary match the baseline. Steady-state
+allocations grow from 26.12 GiB at batch eight to 27.17 GiB at batch 32.
+
+Loading is excluded. The first trial at each larger batch includes scratch
+allocation; no trials are removed. Runs execute sequentially with profiling
+disabled. Filesystem and shader-cache state are uncontrolled.
+
+- [Before](m4-max-matrix-staging-before.json): `be26299`, with engine code from
+  `df78ec0`.
+- [After](m4-max-matrix-staging-after.json): `3ad776b`.
+- [Baseline kernel profile](m4-max-matrix-staging-profile-before.json): sampled
+  diagnostic intervals, with profiling overhead.
+- [Isolated kernel timings](m4-max-matrix-staging-kernels.json): dense projections
+  at batches 1, 2, 8, 16, and 32. Repeated buffers can remain cached; use the
+  full-model runs to establish throughput.
+
+All 32 workspace tests pass, as do formatting and Clippy checks. The matrix kernel
+must match every output bit across FP32, BF16, and FP16 weights, varied magnitudes,
+partial rows/columns/token tiles, unaligned input offsets, and output guards.
+No numerical tolerance was loosened.
+
+The [FP16](m4-max-matrix-staging-logits-f16.json) and
+[FP32](m4-max-matrix-staging-logits-f32.json) full-checkpoint comparisons match all
+49,214,268 logits bit for bit at 246 positions. They reuse the `8c179d0` reference
+snapshots already matched by `df78ec0`; each result records the snapshot's SHA-256.
+The three histories include an 8,192-token prompt, 32 continuation tokens per
+history, chunk and sliding-window boundaries, and resets. These checks establish
+agreement on those histories on the M4 Max, using 16K cache capacity.
+
+Use the comparison and isolated-kernel commands above to reproduce these checks.
+For full-model throughput, run each revision with:
+
+```sh
+cargo run --release -- bench --prompt-tokens 8,16,32,128,1024 --decode-tokens 32 \
+  --repetitions 3 --context 262144 --kv-cache f16 > benchmark.json
+```
+
 ## Reproduce
 
 Build in release mode and run with the same local checkpoint:
@@ -495,7 +556,7 @@ parts of elapsed time; they overlap and must not be summed into a speedup estima
 | Expert routing | 48 | 3.5 |
 
 Those three follow-up changes, residual/SwiGLU fusions, projection scheduling,
-prefetch, and parallel residual output changes are implemented above.
+prefetch, parallel residual outputs, and four-wide matrix staging are implemented above.
 Further experiments include combining independent attention projections, fusing
 K/V convolution with normalization and cache updates during decoding, and tuning
 matrix tiles and grouping thresholds across more prompt distributions. The earlier
