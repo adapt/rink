@@ -211,6 +211,66 @@ mod metal {
                 }
             }
         }
+        for fp16 in [false, true] {
+            for length in [32usize, 64, 128, 256, 384, 512, 1024, 8192, 16384] {
+                let (qh, kh, dim, rel_dim, extent) =
+                    (24usize, 8usize, 128usize, 16usize, 1024usize);
+                let cache_data: Vec<f32> = (0..length * kh * dim)
+                    .map(|i| ((i * 17 % 113) as f32 - 56.) / 113.)
+                    .collect();
+                let cache = if fp16 {
+                    let h: Vec<u16> = cache_data
+                        .iter()
+                        .map(|&v| half::f16::from_f32(v).to_bits())
+                        .collect();
+                    d.upload(bytemuck::cast_slice(&h))?
+                } else {
+                    d.upload(bytemuck::cast_slice(&cache_data))?
+                };
+                let q = upload(&mut d, qh * dim)?;
+                let fresh = upload(&mut d, kh * dim)?;
+                let rel = upload(&mut d, qh * rel_dim)?;
+                let profiles = upload(&mut d, rel_dim * extent)?;
+                let parts = length.div_ceil(128);
+                let y = d.allocate(qh * parts * (dim + 2) * 4)?;
+                for (name, group) in [
+                    ("attention_partition", 128usize),
+                    ("attention_partition_wide", 512),
+                    ("attention_partition_prefetch", 256),
+                ] {
+                    // SAFETY: native head dimensions, cache length, and one fresh token
+                    // match the partition ABI for each tested threadgroup size.
+                    let us = unsafe {
+                        time(
+                            &mut d,
+                            &k,
+                            name,
+                            &[&y, &q, &cache, &cache, &fresh, &fresh, &rel, &profiles],
+                            Params::new(
+                                &[
+                                    qh,
+                                    kh,
+                                    dim,
+                                    length - 1,
+                                    length,
+                                    length,
+                                    rel_dim,
+                                    extent,
+                                    parts,
+                                    1,
+                                    usize::from(fp16),
+                                ],
+                                &[],
+                            ),
+                            qh * parts * group,
+                            group,
+                            128,
+                        )?
+                    };
+                    results.push(json!({"kind":"attention","fp16":fp16,"length":length,"kernel":name,"group":group,"gpu_us":us}));
+                }
+            }
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({"device":d.name(),"measurements":results}))?

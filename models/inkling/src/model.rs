@@ -666,13 +666,25 @@ impl<A: Accelerator> Inkling<A> {
         let partials =
             self.attention_workspace(self.batch * qh * capacity.div_ceil(128) * (d + 2))?;
         let profiles = self.w(&format!("{p}.rel_logits_proj.proj"));
+        // More score groups hide latency on small decode grids. Larger grids
+        // use fewer groups plus ordered value prefetch; prompt batches retain
+        // their original scheduling and all paths keep the same reductions.
+        let (partition_kernel, partition_threads) = if self.batch == 1 {
+            if parts <= 2 {
+                ("attention_partition_wide", 512)
+            } else {
+                ("attention_partition_prefetch", 256)
+            }
+        } else {
+            ("attention_partition", 128)
+        };
         self.run(
-            "attention_partition",
+            partition_kernel,
             &[&partials, &q, &keys, &values, &k, &v, &r, &profiles],
             &geometry,
             &[],
-            self.batch * qh * parts * 128,
-            128,
+            self.batch * qh * parts * partition_threads,
+            partition_threads,
         )?;
         let gated = self.alloc(self.batch * qh * d)?;
         self.run(

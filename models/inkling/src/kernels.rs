@@ -47,6 +47,8 @@ impl<A: Accelerator> Kernels<A> {
             "matmul_packed",
             "cache_write",
             "attention_partition",
+            "attention_partition_wide",
+            "attention_partition_prefetch",
             "attention_finish",
             "rms",
             "rms_parallel",

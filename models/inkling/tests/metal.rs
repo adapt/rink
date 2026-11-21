@@ -1095,6 +1095,14 @@ fn partitioned_attention_matches_scalar_with_tails_ring_and_causal_chunks() {
         };
         for (position, capacity, batch) in [
             (0, 257, 1),
+            (0, 1, 1),
+            (3, 3, 5),
+            (256, 257, 3),
+            (262145, 1024, 1),
+            (127, 512, 1),
+            (129, 512, 3),
+            (1025, 1024, 1),
+            (33, 1024, 32),
             (513, 257, 1),
             (126, 257, 5),
             (600, 257, 7),
@@ -1102,7 +1110,11 @@ fn partitioned_attention_matches_scalar_with_tails_ring_and_causal_chunks() {
             (65535, 65536, 1),
             (262143, 262144, 1),
         ] {
-            let (qh, kh, dim, rel_dim, extent) = if capacity > 257 {
+            let (qh, kh, dim, rel_dim, extent) = if capacity == 512 {
+                (6, 2, 160, 17, 64)
+            } else if capacity == 1024 {
+                (24, 8, 128, 16, 1024)
+            } else if capacity > 257 {
                 (3, 1, 8, 4, 64)
             } else {
                 (6, 2, 40, 4, 64)
@@ -1190,6 +1202,46 @@ fn partitioned_attention_matches_scalar_with_tails_ring_and_causal_chunks() {
                         32,
                     )
                     .unwrap();
+            }
+            for (name, threads) in [
+                ("attention_partition_wide", 512),
+                ("attention_partition_prefetch", 256),
+            ] {
+                let length = batch * qh * parts * (dim + 2);
+                let candidate = upload(&mut device, &vec![f32::NAN; length + 17]);
+                // SAFETY: each candidate keeps the same partition/output geometry.
+                unsafe {
+                    kernels
+                        .run(
+                            &mut device,
+                            name,
+                            &[
+                                &candidate,
+                                &buffers[0],
+                                &buffers[1],
+                                &buffers[2],
+                                &buffers[3],
+                                &buffers[4],
+                                &buffers[5],
+                                &buffers[6],
+                            ],
+                            Params::new(&geometry, &[]),
+                            batch * qh * parts * threads,
+                            threads,
+                        )
+                        .unwrap();
+                }
+                let bytes = device.read(&candidate).unwrap();
+                assert_eq!(
+                    &bytes[..length * 4],
+                    device.read(&partial).unwrap(),
+                    "{name} fp16={fp16} position={position} capacity={capacity} batch={batch}"
+                );
+                assert!(
+                    bytes[length * 4..]
+                        .chunks_exact(4)
+                        .all(|b| b == f32::NAN.to_le_bytes())
+                );
             }
             let mut expected = Vec::new();
             for token in 0..batch {
@@ -1575,6 +1627,61 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
         }
     }
     close(&read(&mut device, &output), &expected, 0.00001);
+
+    // Also compare the decode path at the released model's full cache geometry.
+    // Only the first fresh token is visible; unwritten later slots contain NaNs.
+    let length = qh * parts * (dim + 2);
+    let initial = vec![f32::NAN; length + 17];
+    let reference = upload(&mut device, &initial);
+    let candidate = upload(&mut device, &initial);
+    let decode_geometry = Params::new(
+        &[
+            qh,
+            kh,
+            dim,
+            position,
+            capacity,
+            position + 1,
+            1,
+            1,
+            parts,
+            1,
+            1,
+        ],
+        &[],
+    );
+    for (name, buffer, threads) in [
+        ("attention_partition", &reference, 128),
+        ("attention_partition_prefetch", &candidate, 256),
+    ] {
+        // SAFETY: the same native caches and first fresh token serve both kernels;
+        // each output has one token's partitions plus unwritten sentinel guards.
+        unsafe {
+            kernels
+                .run(
+                    &mut device,
+                    name,
+                    &[
+                        buffer,
+                        &query,
+                        &keys,
+                        &values,
+                        &new_keys,
+                        &new_values,
+                        &rel,
+                        &profiles,
+                    ],
+                    decode_geometry,
+                    qh * parts * threads,
+                    threads,
+                )
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        device.read(&candidate).unwrap(),
+        device.read(&reference).unwrap()
+    );
 }
 
 #[test]

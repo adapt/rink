@@ -488,6 +488,75 @@ kernel void attention_partition(device float* out [[buffer(0)]], device const fl
         bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:kp%p.u[4])*p.u[1]+kh)*d;
         sum+=scores[j]*kv_read(values,new_values,offset+i,fresh,p.u[10]);}out[dest+2+i]=sum;}
 }
+// A partition has at most capacity valid keys, so its cache indices wrap once.
+uint partition_cache_slot(uint first, uint index, uint capacity) {
+    uint slot=first+index;return slot>=capacity?slot-capacity:slot;
+}
+// Sixteen SIMD groups compute independent key scores. The first four retain
+// the original softmax and value reductions; all float operations stay ordered.
+kernel void attention_partition_wide(device float* out [[buffer(0)]], device const float* q [[buffer(1)]], device const uchar* keys [[buffer(2)]], device const uchar* values [[buffer(3)]], device const float* new_keys [[buffer(4)]], device const float* new_values [[buffer(5)]], device const float* rel [[buffer(6)]], device const float* profiles [[buffer(7)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float scores[128], maxima[4], totals[4];
+    uint parts=p.u[8], query=group/parts, part=group%parts, h=query%p.u[0], token=query/p.u[0], d=p.u[2];
+    uint pos=p.u[3]+token,n=min(pos+1,p.u[4]),start=part*128,kh=h/(p.u[0]/p.u[1]),sg=tid/32;
+    uint dest=(query*parts+part)*(d+2);
+    if(start>=n){if(tid==0){out[dest]=-INFINITY;out[dest+1]=0;}for(uint i=tid;i<d;i+=512)out[dest+2+i]=0;return;}
+    uint first_slot=(pos+1-n+start)%p.u[4];
+    for(uint j=sg;j<128;j+=16){uint at=start+j;float score=-INFINITY;
+        if(at<n){uint kp=pos+1-n+at,dist=pos-kp;
+            bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:partition_cache_slot(first_slot,j,p.u[4]))*p.u[1]+kh)*d;
+            float dot=0;for(uint i=lane;i<d;i+=32)dot+=q[query*d+i]*kv_read(keys,new_keys,offset+i,fresh,p.u[10]);score=simd_sum(dot)*rsqrt(float(d));
+            float bias=0;if(dist<p.u[7])for(uint i=lane;i<p.u[6];i+=32)bias+=rel[query*p.u[6]+i]*profiles[i*p.u[7]+dist];score+=simd_sum(bias);
+        }
+        if(lane==0)scores[j]=score;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid<128){float mx=simd_max(scores[tid]);if(lane==0)maxima[sg]=mx;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float mx=max(max(maxima[0],maxima[1]),max(maxima[2],maxima[3]));
+    if(tid<128){float weight=exp(scores[tid]-mx);scores[tid]=weight;float den=simd_sum(weight);if(lane==0)totals[sg]=den;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid==0){out[dest]=mx;out[dest+1]=totals[0]+totals[1]+totals[2]+totals[3];}
+    if(tid<128)for(uint i=tid;i<d;i+=128){float sum=0;for(uint j=0;j<min(128u,n-start);j++){uint kp=pos+1-n+start+j;
+        bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:partition_cache_slot(first_slot,j,p.u[4]))*p.u[1]+kh)*d;
+        sum+=scores[j]*kv_read(values,new_values,offset+i,fresh,p.u[10]);}out[dest+2+i]=sum;}
+}
+// Eight score groups suit larger grids. Prefetch four values, then consume
+// them in the original order, reusing the partition's initial cache slot.
+kernel void attention_partition_prefetch(device float* out [[buffer(0)]], device const float* q [[buffer(1)]], device const uchar* keys [[buffer(2)]], device const uchar* values [[buffer(3)]], device const float* new_keys [[buffer(4)]], device const float* new_values [[buffer(5)]], device const float* rel [[buffer(6)]], device const float* profiles [[buffer(7)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float scores[128], maxima[4], totals[4];
+    uint parts=p.u[8], query=group/parts, part=group%parts, h=query%p.u[0], token=query/p.u[0], d=p.u[2];
+    uint pos=p.u[3]+token,n=min(pos+1,p.u[4]),start=part*128,kh=h/(p.u[0]/p.u[1]),sg=tid/32;
+    uint dest=(query*parts+part)*(d+2);
+    if(start>=n){if(tid==0){out[dest]=-INFINITY;out[dest+1]=0;}for(uint i=tid;i<d;i+=256)out[dest+2+i]=0;return;}
+    uint first_slot=(pos+1-n+start)%p.u[4];
+    for(uint j=sg;j<128;j+=8){uint at=start+j;float score=-INFINITY;
+        if(at<n){uint kp=pos+1-n+at,dist=pos-kp;
+            bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:partition_cache_slot(first_slot,j,p.u[4]))*p.u[1]+kh)*d;
+            float dot=0;for(uint i=lane;i<d;i+=32)dot+=q[query*d+i]*kv_read(keys,new_keys,offset+i,fresh,p.u[10]);score=simd_sum(dot)*rsqrt(float(d));
+            float bias=0;if(dist<p.u[7])for(uint i=lane;i<p.u[6];i+=32)bias+=rel[query*p.u[6]+i]*profiles[i*p.u[7]+dist];score+=simd_sum(bias);
+        }
+        if(lane==0)scores[j]=score;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid<128){float mx=simd_max(scores[tid]);if(lane==0)maxima[sg]=mx;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float mx=max(max(maxima[0],maxima[1]),max(maxima[2],maxima[3]));
+    if(tid<128){float weight=exp(scores[tid]-mx);scores[tid]=weight;float den=simd_sum(weight);if(lane==0)totals[sg]=den;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid==0){out[dest]=mx;out[dest+1]=totals[0]+totals[1]+totals[2]+totals[3];}
+    if(tid<128)for(uint i=tid;i<d;i+=128){float sum=0;uint count=min(128u,n-start),j=0;for(;j+3<count;j+=4){
+        uint kp0=pos+1-n+start+j+0;bool fresh0=kp0>=p.u[3];uint off0=((fresh0?kp0-p.u[3]:partition_cache_slot(first_slot,j+0,p.u[4]))*p.u[1]+kh)*d;float v0=kv_read(values,new_values,off0+i,fresh0,p.u[10]);
+        uint kp1=pos+1-n+start+j+1;bool fresh1=kp1>=p.u[3];uint off1=((fresh1?kp1-p.u[3]:partition_cache_slot(first_slot,j+1,p.u[4]))*p.u[1]+kh)*d;float v1=kv_read(values,new_values,off1+i,fresh1,p.u[10]);
+        uint kp2=pos+1-n+start+j+2;bool fresh2=kp2>=p.u[3];uint off2=((fresh2?kp2-p.u[3]:partition_cache_slot(first_slot,j+2,p.u[4]))*p.u[1]+kh)*d;float v2=kv_read(values,new_values,off2+i,fresh2,p.u[10]);
+        uint kp3=pos+1-n+start+j+3;bool fresh3=kp3>=p.u[3];uint off3=((fresh3?kp3-p.u[3]:partition_cache_slot(first_slot,j+3,p.u[4]))*p.u[1]+kh)*d;float v3=kv_read(values,new_values,off3+i,fresh3,p.u[10]);
+        sum+=scores[j+0]*v0;
+        sum+=scores[j+1]*v1;
+        sum+=scores[j+2]*v2;
+        sum+=scores[j+3]*v3;
+    }for(;j<count;j++){uint kp=pos+1-n+start+j;
+        bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:partition_cache_slot(first_slot,j,p.u[4]))*p.u[1]+kh)*d;
+        sum+=scores[j]*kv_read(values,new_values,offset+i,fresh,p.u[10]);}out[dest+2+i]=sum;}
+}
 kernel void attention_finish(device float* y [[buffer(0)]], device const float* parts [[buffer(1)]], device const float* sinks [[buffer(2)]], device const float* gate [[buffer(3)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint query=t/32,d=p.u[2],n=p.u[8];if(query>=p.u[0]*p.u[9])return;
     uint base=query*n*(d+2);float mx=sinks[query];for(uint j=lane;j<n;j+=32)mx=max(mx,parts[base+j*(d+2)]);mx=simd_max(mx);
