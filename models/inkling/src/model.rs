@@ -297,7 +297,7 @@ impl<A: Accelerator> Inkling<A> {
             if vectorized {
                 "matvec_packed"
             } else {
-                "matvec"
+                "matvec_prefetch"
             },
             &[&y, &w.buffer, x],
             &[rows, cols, w.dtype, 1, offset],
@@ -338,12 +338,23 @@ impl<A: Accelerator> Inkling<A> {
         let n = self.config.text_config.hidden_size;
         let q = self.w(query);
         let y = self.alloc(n * self.batch)?;
+        // Each shard repeats the small score reduction, then owns disjoint
+        // output channels. This exposes parallel work without splitting sums.
+        // Prompt batches already provide parallelism, so use fewer shards.
+        let shards = n.div_ceil(256).min(if self.batch < 8 { 8 } else { 4 });
         self.run(
-            "block_read_parallel",
+            "block_read_prefetch",
             &[&y, &blocks.buffer, live, &q],
-            &[n, blocks.count + 1, offset, blocks.offset, self.batch],
+            &[
+                n,
+                blocks.count + 1,
+                offset,
+                blocks.offset,
+                self.batch,
+                shards,
+            ],
             &[],
-            self.batch * 256,
+            self.batch * shards * 256,
             256,
         )?;
         Ok(y)

@@ -649,47 +649,79 @@ fn wide_normalization_matches_reference_with_zero_rows_and_tails() {
 fn parallel_residual_reads_match_single_simd_with_offsets_and_tails() {
     let mut device = Metal::new().unwrap();
     let kernels = Kernels::compile(&mut device).unwrap();
-    for width in [17, 2304] {
-        for batch in [1, 3] {
-            for blocks in [1, 2, 7, 32] {
-                let values: Vec<_> = (0..(blocks + 3) * batch * width)
-                    .map(|i| ((i * 17 % 211) as f32 - 105.) / 33.)
-                    .collect();
-                let bank = upload(&mut device, &values);
-                let live = upload(&mut device, &values[..batch * width]);
-                let query = upload(&mut device, &values[..2 * width]);
-                let expected = device.allocate(batch * width * 4).unwrap();
-                let actual = device.allocate(batch * width * 4).unwrap();
-                let params = Params::new(&[width, blocks, width, 3, batch], &[]);
-                // SAFETY: block bank includes a three-block offset and all saved
-                // blocks; the live state and query cover their requested rows.
-                unsafe {
-                    kernels
-                        .run(
-                            &mut device,
-                            "block_read",
-                            &[&expected, &bank, &live, &query],
-                            params,
-                            batch * 32,
-                            32,
-                        )
-                        .unwrap();
-                    kernels
-                        .run(
-                            &mut device,
-                            "block_read_parallel",
-                            &[&actual, &bank, &live, &query],
-                            params,
-                            batch * 256,
-                            256,
-                        )
-                        .unwrap();
+    for spread in [false, true] {
+        for width in [17, 127, 128, 129, 2304] {
+            for batch in [1, 3, 32] {
+                for blocks in [1, 2, 7, 9, 32] {
+                    let values: Vec<_> = (0..(blocks + 3) * batch * width)
+                        .map(|i| {
+                            let value = ((i * 17 % 211) as f32 - 105.) / 33.;
+                            if spread {
+                                value * 2f32.powi((i % 13) as i32 - 6)
+                            } else {
+                                value
+                            }
+                        })
+                        .collect();
+                    let bank = upload(&mut device, &values);
+                    let live = upload(&mut device, &values[..batch * width]);
+                    let query = upload(&mut device, &values[..2 * width]);
+                    let expected = device.allocate(batch * width * 4).unwrap();
+                    let initial = vec![f32::NAN; batch * width + 17];
+                    let actual = upload(&mut device, &initial);
+                    let params = Params::new(&[width, blocks, width, 3, batch], &[]);
+                    // SAFETY: block bank includes a three-block offset and all saved
+                    // blocks; the live state and query cover their requested rows.
+                    unsafe {
+                        kernels
+                            .run(
+                                &mut device,
+                                "block_read",
+                                &[&expected, &bank, &live, &query],
+                                params,
+                                batch * 32,
+                                32,
+                            )
+                            .unwrap();
+                        kernels
+                            .run(
+                                &mut device,
+                                "block_read_parallel",
+                                &[&actual, &bank, &live, &query],
+                                params,
+                                batch * 256,
+                                256,
+                            )
+                            .unwrap();
+                    }
+                    close(
+                        &read(&mut device, &actual)[..batch * width],
+                        &read(&mut device, &expected),
+                        0.000001,
+                    );
+                    for shards in [0usize, 1, 4, 8] {
+                        let prefetched = upload(&mut device, &initial);
+                        // SAFETY: the prefetch variant has the same buffers, with
+                        // disjoint output shards. NaN guards detect excess writes.
+                        unsafe {
+                            kernels
+                                .run(
+                                    &mut device,
+                                    "block_read_prefetch",
+                                    &[&prefetched, &bank, &live, &query],
+                                    Params::new(&[width, blocks, width, 3, batch, shards], &[]),
+                                    batch * shards.max(1) * 256,
+                                    256,
+                                )
+                                .unwrap();
+                        }
+                        assert_eq!(
+                            device.read(&actual).unwrap(),
+                            device.read(&prefetched).unwrap(),
+                            "width={width}, batch={batch}, blocks={blocks}, shards={shards}, spread={spread}"
+                        );
+                    }
                 }
-                close(
-                    &read(&mut device, &actual),
-                    &read(&mut device, &expected),
-                    0.000001,
-                );
             }
         }
     }
@@ -1628,6 +1660,24 @@ fn projection_scheduling_preserves_every_output_bit() {
                             d.read(&new).unwrap(),
                             d.read(&old).unwrap(),
                             "scalar threadgroup placement changed output bits"
+                        );
+                        // SAFETY: prefetching retains the scalar projection ABI,
+                        // including short columns and non-aligned tails.
+                        unsafe {
+                            k.run(
+                                &mut d,
+                                "matvec_prefetch",
+                                &[&new, &weights, &input],
+                                p,
+                                rows * 32,
+                                32,
+                            )
+                            .unwrap();
+                        }
+                        assert_eq!(
+                            d.read(&new).unwrap(),
+                            d.read(&old).unwrap(),
+                            "prefetch changed scalar output bits"
                         );
                     }
                     if batch == 1 && cols % 4 != 0 {

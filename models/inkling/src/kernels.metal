@@ -37,6 +37,18 @@ kernel void matvec(device float* y [[buffer(0)]], device const uchar* w [[buffer
     float v=0; for(uint c=lane;c<p.u[1];c+=32) v+=weight(w,row*p.u[1]+c,p.u[2])*x[p.u[4]+c];
     v=simd_sum(v); if(lane==0) y[row]=v;
 }
+// Stage four successive lane inputs before consuming them in the scalar
+// kernel's original order. The remainder keeps the same lane-strided sum.
+kernel void matvec_prefetch(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const float* x [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint row=t/32,n=p.u[1];if(row>=p.u[0])return;float v=0;uint c=lane;
+    for(;c+96<n;c+=128){
+        float4 a=float4(weight(w,row*n+c,p.u[2]),weight(w,row*n+c+32,p.u[2]),weight(w,row*n+c+64,p.u[2]),weight(w,row*n+c+96,p.u[2]));
+        float4 b=float4(x[p.u[4]+c],x[p.u[4]+c+32],x[p.u[4]+c+64],x[p.u[4]+c+96]);
+        v+=a.x*b.x;v+=a.y*b.y;v+=a.z*b.z;v+=a.w*b.w;
+    }
+    for(;c<n;c+=32)v+=weight(w,row*n+c,p.u[2])*x[p.u[4]+c];
+    v=simd_sum(v);if(lane==0)y[row]=v;
+}
 // Four output rows per SIMD group, four contiguous weights per lane. cols % 4 == 0.
 kernel void matvec4(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const float* x [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint row=(t/32)*4,cols=p.u[1];if(row>=p.u[0])return;float4 sum=0;
@@ -142,6 +154,31 @@ kernel void block_read_parallel(device float* y [[buffer(0)]], device const floa
     if(tid==0){float mx=-INFINITY,total=0;for(uint j=0;j<b;j++)mx=max(mx,score[j]);for(uint j=0;j<b;j++){score[j]=exp(score[j]-mx);total+=score[j];}den=total;}
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for(uint i=tid;i<n;i+=256){float v=0;for(uint j=0;j<b;j++){device const float* block=j+1==b?live:blocks+(j+p.u[3])*n*p.u[4];v+=block[i]*r[j]*score[j]/den;}y[i]=v;}
+}
+// Same ABI as block_read_parallel, with u[5] output shards (0 means 1).
+// Each shard repeats identical scores, then owns disjoint output channels.
+// Prefetch successive lane inputs without changing either reduction.
+kernel void block_read_prefetch(device float* y [[buffer(0)]], device const float* blocks [[buffer(1)]], device const float* live [[buffer(2)]], device const float* query [[buffer(3)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float r[32],score[32],den;
+    uint n=p.u[0],b=p.u[1],sg=tid/32,shards=max(p.u[5],1u),token=group/shards,shard=group%shards;
+    if(token>=p.u[4])return;y+=token*n;live+=token*n;blocks+=token*n;
+    for(uint j=sg;j<b;j+=8){
+        device const float* block=j+1==b?live:blocks+(j+p.u[3])*n*p.u[4];
+        float ss=0,dot=0;uint i=lane;
+        for(;i+96<n;i+=128){
+            float4 v=float4(block[i],block[i+32],block[i+64],block[i+96]);
+            float4 q=float4(query[p.u[2]+i],query[p.u[2]+i+32],query[p.u[2]+i+64],query[p.u[2]+i+96]);
+            ss+=v.x*v.x;dot+=v.x*q.x;ss+=v.y*v.y;dot+=v.y*q.y;
+            ss+=v.z*v.z;dot+=v.z*q.z;ss+=v.w*v.w;dot+=v.w*q.w;
+        }
+        for(;i<n;i+=32){float v=block[i];ss+=v*v;dot+=v*query[p.u[2]+i];}
+        float norm=rsqrt(simd_sum(ss)/float(n)+1.e-6f),s=simd_sum(dot)*norm*rsqrt(float(n));
+        if(lane==0){r[j]=norm;score[j]=s;}
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid==0){float mx=-INFINITY,total=0;for(uint j=0;j<b;j++)mx=max(mx,score[j]);for(uint j=0;j<b;j++){score[j]=exp(score[j]-mx);total+=score[j];}den=total;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint i=shard*256+tid;i<n;i+=shards*256){float v=0;for(uint j=0;j<b;j++){device const float* block=j+1==b?live:blocks+(j+p.u[3])*n*p.u[4];v+=block[i]*r[j]*score[j]/den;}y[i]=v;}
 }
 // Concatenated unweighted RMS-normalized controller inputs. width; epsilon.
 kernel void concat_norm(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* msg [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {

@@ -75,6 +75,7 @@ mod metal {
                     vec![
                         ("matvec", rows * 32, 128),
                         ("matvec", rows * 32, 32),
+                        ("matvec_prefetch", rows * 32, 32),
                         ("matvec4", rows.div_ceil(4) * 32, 128),
                         ("matvec_packed", rows * 32, 128),
                     ]
@@ -103,6 +104,37 @@ mod metal {
                         )?
                     };
                     results.push(json!({"kind":"dense","rows":rows,"cols":cols,"batch":batch,"kernel":name,"group":group,"gpu_us":us}));
+                }
+            }
+        }
+        for batch in [1usize, 32] {
+            let width = 2304usize;
+            for blocks in [1usize, 7, 13, 25] {
+                let bank = upload(&mut d, blocks * batch * width)?;
+                let live = upload(&mut d, batch * width)?;
+                let query = upload(&mut d, width)?;
+                let y = d.allocate(batch * width * 4)?;
+                for (name, shards) in [
+                    ("block_read_parallel", 1usize),
+                    ("block_read_prefetch", 1),
+                    ("block_read_prefetch", 4),
+                    ("block_read_prefetch", 8),
+                ] {
+                    // SAFETY: the bank contains every saved block, and all
+                    // activation/query buffers cover the requested dimensions.
+                    let us = unsafe {
+                        time(
+                            &mut d,
+                            &k,
+                            name,
+                            &[&y, &bank, &live, &query],
+                            Params::new(&[width, blocks, 0, 0, batch, shards], &[]),
+                            batch * shards * 256,
+                            256,
+                            128,
+                        )?
+                    };
+                    results.push(json!({"kind":"residual","shards":shards,"width":width,"blocks":blocks,"batch":batch,"kernel":name,"gpu_us":us}));
                 }
             }
         }
