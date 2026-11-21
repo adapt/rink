@@ -249,6 +249,21 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                 .map(|i| (i % 7 + 1) as f32 / 8.)
                 .collect::<Vec<_>>(),
         );
+        let table = d.allocate(experts * 4096 * 4).unwrap();
+        if format == 0 {
+            // SAFETY: the table has 4096 entries for each uploaded factor.
+            unsafe {
+                k.run(
+                    &mut d,
+                    "nvfp4_decode_table",
+                    &[&table, &factors],
+                    Params::new(&[experts], &[]),
+                    experts * 4096,
+                    128,
+                )
+                .unwrap();
+            }
+        }
         for batch in [1usize, 2, 8, 17, 32, 33] {
             for sparse in [false, true] {
                 let routes: Vec<_> = (0..batch * top)
@@ -360,6 +375,30 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                         )
                         .unwrap();
                     }
+                    if format == 0 {
+                        let lookup = upload(&mut d, &vec![f32::NAN; slots * rows + 17]);
+                        // SAFETY: same validated geometry as the reference, plus its complete table.
+                        unsafe {
+                            k.run(
+                                &mut d,
+                                "expert_matvec_nvfp4",
+                                &[
+                                    &lookup, &weights, &scales, &factors, &input, &routing, &table,
+                                ],
+                                p,
+                                slots * rows * 32,
+                                128,
+                            )
+                            .unwrap();
+                        }
+                        let bytes = d.read(&lookup).unwrap();
+                        assert_eq!(&bytes[..slots * rows * 4], d.read(&old).unwrap());
+                        assert!(
+                            read(&mut d, &lookup)[slots * rows..]
+                                .iter()
+                                .all(|v| v.to_bits() == f32::NAN.to_bits())
+                        );
+                    }
                     let tiled_values = read(&mut d, &tiled);
                     let reference = read(&mut d, &new);
                     for (i, (&a, &b)) in tiled_values.iter().zip(&reference).enumerate() {
@@ -404,6 +443,31 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                                 128,
                             )
                             .unwrap();
+                        }
+                        if format == 0 {
+                            let lookup = upload(&mut d, &vec![f32::NAN; slots * width + 17]);
+                            // SAFETY: paired rows use the same complete matrix table and routes.
+                            unsafe {
+                                k.run(
+                                    &mut d,
+                                    "expert_swiglu_nvfp4",
+                                    &[
+                                        &lookup, &weights, &scales, &factors, &input, &routing,
+                                        &table,
+                                    ],
+                                    fused,
+                                    slots * width * 32,
+                                    128,
+                                )
+                                .unwrap();
+                            }
+                            let bytes = d.read(&lookup).unwrap();
+                            assert_eq!(&bytes[..slots * width * 4], d.read(&fused_vector).unwrap());
+                            assert!(
+                                read(&mut d, &lookup)[slots * width..]
+                                    .iter()
+                                    .all(|v| v.to_bits() == f32::NAN.to_bits())
+                            );
                         }
                         close(
                             &read(&mut d, &fused_vector),
@@ -1716,6 +1780,7 @@ fn projection_scheduling_preserves_every_output_bit() {
             (127, 128),
             (128, 256),
             (131, 2304),
+            (131, 3072),
             (384, 4608),
             (37, 29),
         ] {
@@ -1791,6 +1856,23 @@ fn projection_scheduling_preserves_every_output_bit() {
                             d.read(&old).unwrap(),
                             "prefetch changed scalar output bits"
                         );
+                        if dtype == 1 && [2304, 4608].contains(&cols) {
+                            let name = if cols == 2304 {
+                                "matvec_scalar_bf16_2304"
+                            } else {
+                                "matvec_scalar_bf16_4608"
+                            };
+                            // SAFETY: BF16 storage and fixed column count match this specialization.
+                            unsafe {
+                                k.run(&mut d, name, &[&new, &weights, &input], p, rows * 32, 32)
+                                    .unwrap();
+                            }
+                            assert_eq!(
+                                d.read(&new).unwrap(),
+                                d.read(&old).unwrap(),
+                                "{name} rows={rows} offset={offset}"
+                            );
+                        }
                     }
                     if batch == 1 && cols % 4 != 0 {
                         continue;
@@ -1851,6 +1933,23 @@ fn projection_scheduling_preserves_every_output_bit() {
                             assert!(a.is_finite());
                         }
                     }
+                    if batch == 1 && dtype == 1 && [2304, 3072].contains(&cols) {
+                        let name = if cols == 2304 {
+                            "matvec_bf16_2304"
+                        } else {
+                            "matvec_bf16_3072"
+                        };
+                        // SAFETY: aligned input offset, BF16 storage, fixed columns, and padded rows.
+                        unsafe {
+                            k.run(&mut d, name, &[&new, &weights, &input], p, rows * 32, 128)
+                                .unwrap();
+                        }
+                        assert_eq!(
+                            d.read(&new).unwrap(),
+                            d.read(&old).unwrap(),
+                            "{name} rows={rows} offset={offset}"
+                        );
+                    }
                     if batch > 1 {
                         let name = "matmul_packed";
                         let packed = upload(&mut d, &initial);
@@ -1875,6 +1974,151 @@ fn projection_scheduling_preserves_every_output_bit() {
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn nvfp4_table_preserves_codes_scales_and_signed_zero() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    let factors = [0.0f32, 1.0 / 7.0, 1.0, 1.0 / 4096.0, 4096.0];
+    let f = upload(&mut d, &factors);
+    let table = upload(&mut d, &vec![f32::NAN; factors.len() * 4096 + 17]);
+    // SAFETY: the output includes every code/scale/factor tuple and sentinel guards.
+    unsafe {
+        k.run(
+            &mut d,
+            "nvfp4_decode_table",
+            &[&table, &f],
+            Params::new(&[factors.len()], &[]),
+            factors.len() * 4096,
+            128,
+        )
+        .unwrap();
+    }
+    let values = read(&mut d, &table);
+    for (expert, &factor) in factors.iter().enumerate() {
+        for scale in 0u32..256 {
+            for code in 0u32..16 {
+                let exponent = (scale >> 3) & 15;
+                let mantissa = scale & 7;
+                let value = if exponent == 0 {
+                    mantissa as f32 / 512.0
+                } else if exponent == 15 && mantissa == 7 {
+                    f32::NAN
+                } else {
+                    (1.0 + mantissa as f32 / 8.0) * 2f32.powi(exponent as i32 - 7)
+                };
+                let scale_value = if scale & 128 != 0 { -value } else { value };
+                let magnitude = [0.0f32, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0][(code & 7) as usize];
+                let expected =
+                    magnitude * if code & 8 != 0 { -1.0 } else { 1.0 } * scale_value * factor;
+                let actual = values[expert * 4096 + scale as usize * 16 + code as usize];
+                if expected.is_nan() {
+                    assert!(actual.is_nan());
+                } else {
+                    assert_eq!(
+                        actual.to_bits(),
+                        expected.to_bits(),
+                        "expert={expert} scale={scale} code={code}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        values[factors.len() * 4096..]
+            .iter()
+            .all(|v| v.to_bits() == f32::NAN.to_bits())
+    );
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn native_mxfp8_projections_preserve_all_bits_and_route_inputs() {
+    let mut d = Metal::new().unwrap();
+    let k = Kernels::compile(&mut d).unwrap();
+    let (experts, top, rows) = (3usize, 2usize, 2304usize);
+    for down in [false, true] {
+        let cols = if down { 1152 } else { 2304 };
+        let count = experts * rows * cols;
+        let w = d
+            .upload(
+                &(0..count)
+                    .map(|i| {
+                        [
+                            0x00, 0x80, 0x01, 0x81, 0x38, 0xbc, 0x7e, 0xfe, 0x40, 0x39, 0x10,
+                        ][i % 11]
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let scales = d
+            .upload(
+                &(0..count / 32)
+                    .map(|i| [121, 125, 127, 129, 133][i % 5])
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let factors = upload(&mut d, &[1.]);
+        for batch in [1usize, 3, 7] {
+            let slots = batch * top;
+            let width = if down { rows } else { rows / 2 };
+            let x = upload(
+                &mut d,
+                &(0..cols * if down { slots } else { batch })
+                    .map(|i| ((i * 13 % 127) as f32 - 63.) / 131.)
+                    .collect::<Vec<_>>(),
+            );
+            let route = upload(
+                &mut d,
+                &(0..slots)
+                    .flat_map(|slot| [((slot + 2) % experts) as f32, 0.5])
+                    .collect::<Vec<_>>(),
+            );
+            let old = upload(&mut d, &vec![f32::NAN; slots * width + 17]);
+            let new = upload(&mut d, &vec![f32::NAN; slots * width + 17]);
+            let p = Params::new(&[rows, cols, top, 1, usize::from(down), batch], &[4., 25.]);
+            let (reference, candidate) = if down {
+                ("expert_matvec", "expert_matvec_mxfp8_native")
+            } else {
+                ("expert_swiglu_matvec", "expert_swiglu_mxfp8_native")
+            };
+            // SAFETY: native dimensions, MXFP8 blocks, valid routes, and shared/per-route input lengths.
+            unsafe {
+                k.run(
+                    &mut d,
+                    reference,
+                    &[&old, &w, &scales, &factors, &x, &route],
+                    p,
+                    slots * width * 32,
+                    128,
+                )
+                .unwrap();
+                k.run(
+                    &mut d,
+                    candidate,
+                    &[&new, &w, &scales, &factors, &x, &route],
+                    p,
+                    slots * width * 32,
+                    128,
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                d.read(&old).unwrap(),
+                d.read(&new).unwrap(),
+                "{candidate} batch={batch}"
+            );
+            let values = read(&mut d, &new);
+            assert!(values[..slots * width].iter().all(|v| v.is_finite()));
+            assert!(
+                values[slots * width..]
+                    .iter()
+                    .all(|v| v.to_bits() == f32::NAN.to_bits())
+            );
         }
     }
 }

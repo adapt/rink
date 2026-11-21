@@ -26,10 +26,10 @@ mod metal {
         group: usize,
         repeats: usize,
     ) -> Result<f64> {
-        // Warm pipelines and data before three measurements; report the median GPU
+        // Four warm-up trials precede three measurements; report the median GPU
         // command-buffer time, without per-dispatch counter instrumentation.
         let mut times = Vec::new();
-        for trial in 0..4 {
+        for trial in 0..7 {
             d.reset_stats();
             for _ in 0..repeats {
                 unsafe {
@@ -37,7 +37,7 @@ mod metal {
                 }
             }
             d.synchronize()?;
-            if trial > 0 {
+            if trial > 3 {
                 times.push(d.stats().gpu_seconds * 1e6 / repeats as f64);
             }
         }
@@ -71,7 +71,7 @@ mod metal {
                 }
                 let x = upload(&mut d, cols * batch)?;
                 let y = d.allocate(rows * batch * 4)?;
-                let cases = if batch == 1 {
+                let mut cases = if batch == 1 {
                     vec![
                         ("matvec", rows * 32, 128),
                         ("matvec", rows * 32, 32),
@@ -94,6 +94,18 @@ mod metal {
                         ),
                     ]
                 };
+                if batch == 1 {
+                    let native = match (rows < 128, cols) {
+                        (true, 2304) => Some("matvec_scalar_bf16_2304"),
+                        (true, 4608) => Some("matvec_scalar_bf16_4608"),
+                        (false, 2304) => Some("matvec_bf16_2304"),
+                        (false, 3072) => Some("matvec_bf16_3072"),
+                        _ => None,
+                    };
+                    if let Some(name) = native {
+                        cases.push((name, rows * 32, if rows < 128 { 32 } else { 128 }));
+                    }
+                }
                 for (name, threads, group) in cases {
                     // SAFETY: dimensions and dispatches follow each projection ABI.
                     let us = unsafe {
@@ -148,11 +160,30 @@ mod metal {
                 let (experts, top, batch) = (128usize, 8usize, 32usize);
                 let (rows, cols) = if down { (2304, 1152) } else { (2304, 2304) };
                 let count = experts * rows * cols;
-                let w = d.upload(&vec![0x21; if format == 0 { count / 2 } else { count }])?;
-                let scales = d.upload(&vec![
-                    if format == 0 { 0x38 } else { 127 };
-                    count / if format == 0 { 16 } else { 32 }
-                ])?;
+                // Vary codes and scales: a single repeated pair would give the
+                // decode table unrealistically favorable cache locality.
+                let codes: Vec<u8> = (0..if format == 0 { count / 2 } else { count })
+                    .map(|i| {
+                        if format == 0 {
+                            (i.wrapping_mul(73) + 9) as u8
+                        } else {
+                            [0x01, 0x38, 0xbc, 0x10, 0xb0, 0x3c, 0x40][i % 7]
+                        }
+                    })
+                    .collect();
+                let w = d.upload(&codes)?;
+                drop(codes);
+                let scale_codes: Vec<u8> = (0..count / if format == 0 { 16 } else { 32 })
+                    .map(|i| {
+                        if format == 0 {
+                            [0x30, 0x38, 0x39, 0x40, 0x33][i % 5]
+                        } else {
+                            [125, 126, 127, 128, 129][i % 5]
+                        }
+                    })
+                    .collect();
+                let scales = d.upload(&scale_codes)?;
+                drop(scale_codes);
                 let factors = upload(&mut d, experts)?;
                 let routes: Vec<f32> = (0..batch * top)
                     .flat_map(|i| {
@@ -168,6 +199,53 @@ mod metal {
                 let tiles = d.allocate((1 + 2 * max_tiles) * 4)?;
                 let x = upload(&mut d, batch * cols * if down { top } else { 1 })?;
                 let y = d.allocate(batch * top * rows * 4)?;
+                let table = d.allocate(if format == 0 { experts * 4096 * 4 } else { 4 })?;
+                if format == 0 {
+                    // SAFETY: every expert has one factor and 4096 table entries.
+                    unsafe {
+                        k.run(
+                            &mut d,
+                            "nvfp4_decode_table",
+                            &[&table, &factors],
+                            Params::new(&[experts], &[]),
+                            experts * 4096,
+                            128,
+                        )?;
+                    }
+                }
+                let out_rows = if down { rows } else { rows / 2 };
+                let reference = if down {
+                    "expert_matvec"
+                } else {
+                    "expert_swiglu_matvec"
+                };
+                let candidate = match (format, down) {
+                    (0, false) => "expert_swiglu_nvfp4",
+                    (0, true) => "expert_matvec_nvfp4",
+                    (_, false) => "expert_swiglu_mxfp8_native",
+                    (_, true) => "expert_matvec_mxfp8_native",
+                };
+                let mut expected = None;
+                for name in [reference, candidate] {
+                    let p =
+                        Params::new(&[rows, cols, top, format, usize::from(down), 1], &[4., 25.]);
+                    let buffers = [&y, &w, &scales, &factors, &x, &routing, &table];
+                    // SAFETY: first-token routes and inputs cover the native decode geometry.
+                    unsafe {
+                        k.run(&mut d, name, &buffers, p, out_rows * top * 32, 128)?;
+                    }
+                    let bytes = d.read_prefix(&y, out_rows * top * 4)?;
+                    if let Some(expected) = &expected {
+                        assert_eq!(&bytes, expected, "{name}");
+                    } else {
+                        expected = Some(bytes);
+                    }
+                    // SAFETY: same checked decode buffers and dispatch as above.
+                    let us = unsafe {
+                        time(&mut d, &k, name, &buffers, p, out_rows * top * 32, 128, 256)?
+                    };
+                    results.push(json!({"kind":"expert","format":format,"down":down,"rows":rows,"cols":cols,"batch":1,"kernel":name,"gpu_us":us}));
+                }
                 // SAFETY: routes select eight distinct valid experts per token;
                 // group and tile allocations cover all routes and padding.
                 unsafe {

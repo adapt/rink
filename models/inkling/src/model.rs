@@ -58,6 +58,7 @@ struct Expert<B> {
     weight: B,
     scales: B,
     factors: B,
+    lookup: Option<B>,
     format: usize,
 }
 
@@ -139,6 +140,7 @@ impl<A: Accelerator> Inkling<A> {
                 load_expert(
                     &mut device,
                     &checkpoint,
+                    &kernels,
                     &format!("{prefix}.w13_weight"),
                     c.n_routed_experts,
                     c.intermediate_size * 2,
@@ -147,6 +149,7 @@ impl<A: Accelerator> Inkling<A> {
                 load_expert(
                     &mut device,
                     &checkpoint,
+                    &kernels,
                     &format!("{prefix}.w2_weight"),
                     c.n_routed_experts,
                     c.hidden_size,
@@ -291,10 +294,13 @@ impl<A: Accelerator> Inkling<A> {
             return Ok(y);
         }
         self.run(
-            if vectorized {
-                "matvec_packed"
-            } else {
-                "matvec_prefetch"
+            match (vectorized, w.dtype, cols) {
+                (false, 1, 2304) => "matvec_scalar_bf16_2304",
+                (false, 1, 4608) => "matvec_scalar_bf16_4608",
+                (true, 1, 2304) => "matvec_bf16_2304",
+                (true, 1, 3072) => "matvec_bf16_3072",
+                (true, _, _) => "matvec_packed",
+                _ => "matvec_prefetch",
             },
             &[&y, &w.buffer, x],
             &[rows, cols, w.dtype, 1, offset],
@@ -737,6 +743,7 @@ impl<A: Accelerator> Inkling<A> {
             e.factors.clone(),
             e.format,
         );
+        let lookup = e.lookup.clone().unwrap_or_else(|| factors.clone());
         let fused = !down && self.batch < 8;
         let output_rows = if fused { rows / 2 } else { rows };
         let caps = [c.mlp_gate_softcap, c.mlp_up_softcap];
@@ -752,12 +759,27 @@ impl<A: Accelerator> Inkling<A> {
             )?;
         } else {
             self.run(
-                if fused {
+                if format == 0 {
+                    if fused {
+                        "expert_swiglu_nvfp4"
+                    } else {
+                        "expert_matvec_nvfp4"
+                    }
+                } else if format == 1
+                    && rows == 2304
+                    && ((fused && cols == 2304) || (down && cols == 1152))
+                {
+                    if fused {
+                        "expert_swiglu_mxfp8_native"
+                    } else {
+                        "expert_matvec_mxfp8_native"
+                    }
+                } else if fused {
                     "expert_swiglu_matvec"
                 } else {
                     "expert_matvec"
                 },
-                &[&y, &w, &scales, &factors, x, routing],
+                &[&y, &w, &scales, &factors, x, routing, &lookup],
                 &[rows, cols, top, format, usize::from(down), self.batch],
                 &caps,
                 output_rows * top * self.batch * 32,
@@ -1388,6 +1410,7 @@ fn load_weights<A: Accelerator>(
 fn load_expert<A: Accelerator>(
     device: &mut A,
     cp: &Checkpoint,
+    kernels: &Kernels<A>,
     name: &str,
     experts: usize,
     rows: usize,
@@ -1448,7 +1471,26 @@ fn load_expert<A: Accelerator>(
     } else {
         device.upload(&[0u8; 4])?
     };
+    let lookup = if format == 0 {
+        let table = device.allocate(experts * 4096 * 4)?;
+        // SAFETY: 4096 entries cover every FP4 code and FP8 scale per expert.
+        unsafe {
+            kernels.run(
+                device,
+                "nvfp4_decode_table",
+                &[&table, &factors],
+                Params::new(&[experts], &[]),
+                experts * 4096,
+                128,
+            )?;
+        }
+        device.synchronize()?;
+        Some(table)
+    } else {
+        None
+    };
     Ok(Expert {
+        lookup,
         weight,
         scales,
         factors,

@@ -586,3 +586,100 @@ kernel void argmax_finish(device uint* y [[buffer(0)]], device const Choice* x [
     float maximum=simd_max(value);uint index=simd_min(value==maximum?best:0xffffffff);bool invalid=simd_any(bad);
     if(lane==0){y[0]=index;y[1]=uint(invalid);}
 }
+
+// Exact NVFP4 decode values, indexed by expert, FP8 scale byte, and FP4 code.
+// The load-time table uses the same ordered multiplications as expert_weight4.
+float4 expert_lookup4(device const uchar* w, device const uchar* scales, device const float* table, uint idx, uint expert) {
+ uint codes=*((device const ushort*)(w+idx/2)),base=expert*4096+uint(scales[idx/16])*16;
+ return float4(table[base+(codes&15)],table[base+((codes>>4)&15)],table[base+((codes>>8)&15)],table[base+(codes>>12)]);
+}
+
+// experts; table[experts,256,16]. This is only dispatched when loading weights.
+kernel void nvfp4_decode_table(device float* table [[buffer(0)]], device const float* factors [[buffer(1)]], constant Params& p [[buffer(15)]], uint i [[thread_position_in_grid]]) {
+ if(i>=p.u[0]*4096)return; uint code=i%16,scale=(i/16)%256,expert=i/4096;
+ const float lut[8]={0.f,.5f,1.f,1.5f,2.f,3.f,4.f,6.f};
+ table[i]=lut[code&7]*(code&8?-1.f:1.f)*fp8(uchar(scale))*factors[expert];
+}
+
+// Same projection ABI as expert_matvec, plus the exact NVFP4 table at buffer 6.
+kernel void expert_matvec_nvfp4(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const float* routing [[buffer(5)]], device const float* table [[buffer(6)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint out=t/32,slot=out/p.u[0],row=out%p.u[0],token=slot/p.u[2];if(token>=p.u[5])return;
+    uint expert=uint(routing[2*slot]),cols=p.u[1];float sum=0;x+=(p.u[4]?slot:token)*cols;
+    for(uint c=lane*4;c<cols;c+=128){uint idx=(expert*p.u[0]+row)*cols+c;
+        float4 v=expert_lookup4(w,scales,table,idx,expert);
+        float4 input=*((device const float4*)(x+c));sum+=dot(v,input);
+    }
+    sum=simd_sum(sum);if(lane==0)y[out]=sum;
+}
+
+// Same paired projection ABI as expert_swiglu_matvec, plus the table at 6.
+kernel void expert_swiglu_nvfp4(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const float* routing [[buffer(5)]], device const float* table [[buffer(6)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint width=p.u[0]/2,out=t/32,slot=out/width,row=(out%width)*2,token=slot/p.u[2];if(token>=p.u[5])return;
+    uint expert=uint(routing[2*slot]),cols=p.u[1],base=(expert*p.u[0]+row)*cols;float2 sum=0;x+=token*cols;
+    for(uint c=lane*4;c<cols;c+=128){float4 input=*((device const float4*)(x+c));
+        sum.x+=dot(expert_lookup4(w,scales,table,base+c,expert),input);
+        sum.y+=dot(expert_lookup4(w,scales,table,base+cols+c,expert),input);
+    }
+    float gate=simd_sum(sum.x),up=simd_sum(sum.y);if(lane==0)y[out]=expert_activation(gate,up,p.f[0],p.f[1]);
+}
+
+// Native MXFP8 down projection: 2304 output rows, 1152 input columns.
+// Products, dot operations, and reductions retain the generic kernel's order.
+kernel void expert_matvec_mxfp8_native(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const float* routing [[buffer(5)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint out=t/32,slot=out/2304,row=out%2304,token=slot/p.u[2];if(token>=p.u[5])return;
+    uint expert=uint(routing[2*slot]);float sum=0;x+=(p.u[4]?slot:token)*1152;
+    for(uint c=lane*4;c<1152;c+=128){uint idx=(expert*2304+row)*1152+c;float4 v;
+        uchar4 codes=*((device const uchar4*)(w+idx));float scale=scale8(scales[idx/32]);
+        for(uint j=0;j<4;j++)v[j]=fp8(codes[j])*scale;
+        float4 input=*((device const float4*)(x+c));sum+=dot(v,input);
+    }
+    sum=simd_sum(sum);if(lane==0)y[out]=sum;
+}
+
+// Native MXFP8 gate/up projection: 2304 interleaved rows and input columns.
+kernel void expert_swiglu_mxfp8_native(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const float* routing [[buffer(5)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint out=t/32,slot=out/1152,row=(out%1152)*2,token=slot/p.u[2];if(token>=p.u[5])return;
+    uint expert=uint(routing[2*slot]),base=(expert*2304+row)*2304;float2 sum=0;x+=token*2304;
+    for(uint c=lane*4;c<2304;c+=128){float4 input=*((device const float4*)(x+c));
+        sum.x+=dot(expert_weight4(w,scales,base+c,1,1.f),input);
+        sum.y+=dot(expert_weight4(w,scales,base+2304+c,1,1.f),input);
+    }
+    float gate=simd_sum(sum.x),up=simd_sum(sum.y);if(lane==0)y[out]=expert_activation(gate,up,p.f[0],p.f[1]);
+}
+
+// Native BF16 column counts let the compiler schedule loads with fixed bounds.
+// Small projections retain scalar sums; larger ones retain four-wide dots.
+// All four variants keep the dense ABI, including row tails and input offsets.
+kernel void matvec_scalar_bf16_2304(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const float* x [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint row=t/32,n=2304u;if(row>=p.u[0])return;float v=0;uint c=lane;
+    for(;c+96<n;c+=128){
+        float4 a=float4(weight(w,row*n+c,1u),weight(w,row*n+c+32,1u),weight(w,row*n+c+64,1u),weight(w,row*n+c+96,1u));
+        float4 b=float4(x[p.u[4]+c],x[p.u[4]+c+32],x[p.u[4]+c+64],x[p.u[4]+c+96]);
+        v+=a.x*b.x;v+=a.y*b.y;v+=a.z*b.z;v+=a.w*b.w;
+    }
+    for(;c<n;c+=32)v+=weight(w,row*n+c,1u)*x[p.u[4]+c];
+    v=simd_sum(v);if(lane==0)y[row]=v;
+}
+
+kernel void matvec_scalar_bf16_4608(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const float* x [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint row=t/32,n=4608u;if(row>=p.u[0])return;float v=0;uint c=lane;
+    for(;c+96<n;c+=128){
+        float4 a=float4(weight(w,row*n+c,1u),weight(w,row*n+c+32,1u),weight(w,row*n+c+64,1u),weight(w,row*n+c+96,1u));
+        float4 b=float4(x[p.u[4]+c],x[p.u[4]+c+32],x[p.u[4]+c+64],x[p.u[4]+c+96]);
+        v+=a.x*b.x;v+=a.y*b.y;v+=a.z*b.z;v+=a.w*b.w;
+    }
+    for(;c<n;c+=32)v+=weight(w,row*n+c,1u)*x[p.u[4]+c];
+    v=simd_sum(v);if(lane==0)y[row]=v;
+}
+
+kernel void matvec_bf16_2304(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const float* x [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint row=t/32,cols=2304u;if(row>=p.u[0])return;float sum=0;
+    for(uint c=lane*4;c<cols;c+=128){float4 v=*((device const float4*)(x+p.u[4]+c));sum+=dot(weight4(w,row*cols+c,1u),v);}
+    sum=simd_sum(sum);if(lane==0)y[row]=sum;
+}
+
+kernel void matvec_bf16_3072(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const float* x [[buffer(2)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint row=t/32,cols=3072u;if(row>=p.u[0])return;float sum=0;
+    for(uint c=lane*4;c<cols;c+=128){float4 v=*((device const float4*)(x+p.u[4]+c));sum+=dot(weight4(w,row*cols+c,1u),v);}
+    sum=simd_sum(sum);if(lane==0)y[row]=sum;
+}

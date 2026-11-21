@@ -35,6 +35,15 @@ impl<A: Accelerator> Kernels<A> {
     pub fn compile(device: &mut A) -> Result<Self> {
         let mut entries = HashMap::new();
         for name in [
+            "nvfp4_decode_table",
+            "expert_matvec_nvfp4",
+            "expert_swiglu_nvfp4",
+            "expert_matvec_mxfp8_native",
+            "expert_swiglu_mxfp8_native",
+            "matvec_scalar_bf16_2304",
+            "matvec_scalar_bf16_4608",
+            "matvec_bf16_2304",
+            "matvec_bf16_3072",
             "copy_vec",
             "embedding",
             "embedding_batch",
