@@ -465,6 +465,76 @@ cargo run --release -- bench --prompt-tokens 8,16,32,128,1024 --decode-tokens 32
   --repetitions 3 --context 262144 --kv-cache f16 > benchmark.json
 ```
 
+## Decode attention scheduling and cache addressing
+
+Revision `80340a6` speeds up attention during single-token decoding:
+
+- Sixteen SIMD groups compute independent key scores when at most two 128-key
+  partitions are visible. Larger grids use eight groups. The first four groups
+  retain the original softmax reductions and ordered value sums.
+- Each partition computes its first ring-cache slot outside the key loops. Valid
+  indices span at most one cache capacity, so a conditional subtraction replaces
+  the repeated remainder operations.
+- The larger-grid kernel preloads four cache values and consumes them in their
+  original order. Cache precision, fresh-token rounding, partition size, and
+  compensated long-context reductions are unchanged.
+
+Batched prefill retains its existing attention kernel. Fresh M4 Max medians use
+three trials per prompt length, 64 decode tokens per trial, FP16 caches, and a
+262,144-token capacity:
+
+| Prompt tokens | Before prefill tok/s | After prefill tok/s | Before decode tok/s | After decode tok/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 195.33 | 194.41 | 33.66 | 35.27 |
+| 128 | 196.34 | 195.92 | 31.36 | 33.56 |
+| 256 | 189.21 | 190.92 | 31.29 | 32.69 |
+| 512 | 180.15 | 179.78 | 31.24 | 32.73 |
+| 1,024 | 160.76 | 165.73 | 31.02 | 32.41 |
+
+Decode improves by 4.4–7.0% across these prompts. Prefill kernels are unchanged;
+the observed prefill differences of −0.5% to +3.1% do not establish a speedup.
+All 960 generated token IDs match. Decode retains zero buffer allocations, 1,737
+dispatches, one encoder/command buffer, and eight readback bytes per token.
+Allocation counters and Metal memory at each recorded phase boundary match the
+baseline, with 27.17 GiB of steady-state Metal allocations.
+
+Loading is excluded; the first prompt's scratch allocation cost is included.
+Runs execute sequentially with profiling disabled. Filesystem and shader-cache
+state are uncontrolled, and the measurements apply to this M4 Max and workload.
+
+- [Before](m4-max-decode-attention-before.json): `29e0b3f`, with engine code from
+  `3ad776b`.
+- [After](m4-max-decode-attention-after.json): `80340a6`.
+- [Baseline kernel profile](m4-max-decode-attention-profile-before.json): sampled
+  diagnostic intervals, with profiling overhead.
+- [Isolated kernel timings](m4-max-decode-attention-kernels.json): includes native
+  attention geometry with FP16 and FP32 caches at histories from 32 to 16,384
+  tokens. Repeated buffers can remain cached; use full-model runs for throughput.
+
+All 32 workspace tests pass, as do formatting and Clippy checks. Both new kernels
+must match every partition-output bit across FP16/FP32 caches, tiny and partial
+rings, wraparound, causal chunks, empty partitions, output guards, and head widths
+below and above 128. The full 256K geometry test also compares the native decode
+kernel bit for bit, with NaNs in unwritten cache positions. No numerical tolerance
+was loosened.
+
+The [FP16](m4-max-decode-attention-logits-f16.json) and
+[FP32](m4-max-decode-attention-logits-f32.json) full-checkpoint comparisons match all
+49,214,268 logits bit for bit at 246 positions. They reuse the `8c179d0` reference
+snapshots already matched by `3ad776b`; each result records the snapshot's SHA-256.
+The three histories include an 8,192-token prompt, 32 continuation tokens per
+history, chunk and sliding-window boundaries, and resets. These checks establish
+agreement on those histories on the M4 Max, using 16K cache capacity; the synthetic
+256K kernel test is separate from full-checkpoint validation.
+
+Use the comparison and isolated-kernel commands above to reproduce these checks.
+For full-model throughput, run each revision with:
+
+```sh
+cargo run --release -- bench --prompt-tokens 32,128,256,512,1024 --decode-tokens 64 \
+  --repetitions 3 --context 262144 --kv-cache f16 > benchmark.json
+```
+
 ## Reproduce
 
 Build in release mode and run with the same local checkpoint:
@@ -556,7 +626,8 @@ parts of elapsed time; they overlap and must not be summed into a speedup estima
 | Expert routing | 48 | 3.5 |
 
 Those three follow-up changes, residual/SwiGLU fusions, projection scheduling,
-prefetch, parallel residual outputs, and four-wide matrix staging are implemented above.
+prefetch, parallel residual outputs, four-wide matrix staging, and decode attention
+scheduling are implemented above.
 Further experiments include combining independent attention projections, fusing
 K/V convolution with normalization and cache updates during decoding, and tuning
 matrix tiles and grouping thresholds across more prompt distributions. The earlier
