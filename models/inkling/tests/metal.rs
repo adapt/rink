@@ -398,6 +398,27 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                                 .iter()
                                 .all(|v| v.to_bits() == f32::NAN.to_bits())
                         );
+                        // SAFETY: grouped NVFP4 has the same tiles and output
+                        // guards as the reference, and reuses its exact table.
+                        unsafe {
+                            k.run(
+                                &mut d,
+                                "expert_matmul_nvfp4",
+                                &[
+                                    &lookup, &weights, &scales, &factors, &input, &groups, &tiles,
+                                    &table,
+                                ],
+                                p,
+                                rows.div_ceil(32) * max_tiles * 128,
+                                128,
+                            )
+                            .unwrap();
+                        }
+                        assert_eq!(
+                            d.read(&lookup).unwrap(),
+                            d.read(&tiled).unwrap(),
+                            "NVFP4 grouped: rows={rows} cols={cols} batch={batch} sparse={sparse} down={down}"
+                        );
                     }
                     let tiled_values = read(&mut d, &tiled);
                     let reference = read(&mut d, &new);

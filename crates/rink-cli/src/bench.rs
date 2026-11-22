@@ -24,6 +24,7 @@ fn phase(seconds: f64, tokens: usize, device: &Metal) -> Value {
         "seconds": seconds, "tokens": tokens, "tokens_per_second": tokens as f64 / seconds,
         "allocations": s.allocations, "allocated_bytes": s.allocated_bytes,
         "device_allocated_bytes": device.allocated_memory(),
+        "peak_allocated_bytes": s.peak_allocated_bytes,
         "dispatches": s.dispatches, "encoders": s.encoders,
         "command_buffers": s.command_buffers, "readback_bytes": s.readback_bytes,
         "cpu_allocation_seconds": s.allocation_seconds, "cpu_encoding_seconds": s.encoding_seconds,

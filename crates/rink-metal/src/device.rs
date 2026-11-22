@@ -10,6 +10,8 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 pub struct MetalStats {
     pub allocations: u64,
     pub allocated_bytes: u64,
+    /// High-water mark of device allocations, sampled after each buffer allocation.
+    pub peak_allocated_bytes: u64,
     pub dispatches: u64,
     pub encoders: u64,
     pub command_buffers: u64,
@@ -83,7 +85,10 @@ impl Metal {
         self.stats
     }
     pub fn reset_stats(&mut self) {
-        self.stats = MetalStats::default();
+        self.stats = MetalStats {
+            peak_allocated_bytes: self.allocated_memory(),
+            ..MetalStats::default()
+        };
         if let Some(profile) = &mut self.kernel_profile {
             profile.stats.clear();
         }
@@ -143,6 +148,8 @@ impl Metal {
         }
         self.stats.allocations += 1;
         self.stats.allocated_bytes += bytes as u64;
+        self.stats.peak_allocated_bytes =
+            self.stats.peak_allocated_bytes.max(self.allocated_memory());
         if let Some(start) = start {
             self.stats.allocation_seconds += start.elapsed().as_secs_f64();
         }

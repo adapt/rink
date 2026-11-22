@@ -50,6 +50,7 @@ mod metal {
         d.set_profiling(true);
         let k = Kernels::compile(&mut d)?;
         let mut results = Vec::new();
+        let experts_only = std::env::args().any(|s| s == "--experts-only");
         for (rows, cols) in [
             (24usize, 2304usize),
             (64, 4608),
@@ -60,6 +61,9 @@ mod metal {
             (2304, 3072),
             (200058, 2304),
         ] {
+            if experts_only {
+                continue;
+            }
             let data: Vec<u16> = (0..rows * cols)
                 .map(|i| half::bf16::from_f32(((i % 113) as f32 - 56.) / 113.).to_bits())
                 .collect();
@@ -125,6 +129,9 @@ mod metal {
             }
         }
         for batch in [1usize, 32] {
+            if experts_only {
+                continue;
+            }
             let width = 2304usize;
             for blocks in [1usize, 7, 13, 25] {
                 let bank = upload(&mut d, blocks * batch * width)?;
@@ -267,10 +274,15 @@ mod metal {
                     )?;
                 }
                 d.synchronize()?;
-                for (name, row_tile, group) in [
+                let mut cases = vec![
                     ("expert_matmul", 8usize, 32usize),
                     ("expert_matmul_tiled", 32, 128),
-                ] {
+                ];
+                if format == 0 {
+                    cases.push(("expert_matmul_nvfp4", 32, 128));
+                }
+                let mut grouped_reference = None;
+                for (name, row_tile, group) in cases {
                     // SAFETY: native weight blocks and shared/per-route inputs
                     // have the lengths required by each expert projection.
                     let us = unsafe {
@@ -278,16 +290,26 @@ mod metal {
                             &mut d,
                             &k,
                             name,
-                            &[&y, &w, &scales, &factors, &x, &slots, &tiles],
+                            &[&y, &w, &scales, &factors, &x, &slots, &tiles, &table],
                             Params::new(&[rows, cols, top, format, usize::from(down), batch], &[]),
                             rows.div_ceil(row_tile) * max_tiles * group,
                             group,
                             16,
                         )?
                     };
+                    let bytes = d.read(&y)?;
+                    if let Some(reference) = &grouped_reference {
+                        assert_eq!(&bytes, reference, "{name}");
+                    } else {
+                        grouped_reference = Some(bytes);
+                    }
                     results.push(json!({"kind":"expert","format":format,"down":down,"rows":rows,"cols":cols,"batch":batch,"kernel":name,"gpu_us":us}));
                 }
             }
+        }
+        if experts_only {
+            println!("{}", serde_json::to_string_pretty(&results)?);
+            return Ok(());
         }
         for fp16 in [false, true] {
             for length in [32usize, 64, 128, 256, 384, 512, 1024, 8192, 16384] {

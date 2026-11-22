@@ -462,6 +462,28 @@ mod gpu {
                 // in the softmax. Keep a separate F64 oracle and an absolute
                 // bound of 4e-5 for input values up to about 3.
                 close(&actual[..length], &expected, 0.00004);
+                if dim == 64 {
+                    // SAFETY: the native specialization uses the same buffers,
+                    // with eight SIMD groups and exactly 64 channels per head.
+                    unsafe {
+                        kernels
+                            .run(
+                                &mut d,
+                                "vision_attention_64x16",
+                                &[&out, &qb, &kb, &vb],
+                                Params::new(&[n, heads, dim], &[]),
+                                n.div_ceil(16) * heads * 256,
+                                256,
+                            )
+                            .unwrap();
+                    }
+                    let candidate = floats(&d.read(&out).unwrap());
+                    assert!(candidate[length..].iter().all(|v| v.is_nan()));
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&candidate[..length]),
+                        bytemuck::cast_slice::<_, u8>(&actual[..length])
+                    );
+                }
             }
         }
     }

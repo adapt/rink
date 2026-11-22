@@ -137,8 +137,12 @@ impl<A: Accelerator> VisionEncoder<A> {
         let q = alloc(device, seq * h)?;
         let k = alloc(device, seq * h)?;
         let v = alloc(device, seq * h)?;
-        let attn = alloc(device, seq * h)?;
-        let projected = alloc(device, seq * h)?;
+        // The attention result is consumed before a becomes the residual.
+        // Normalized inputs are consumed before each projection writes its
+        // result. Ordered dispatch lets these nonoverlapping lifetimes share
+        // storage, saving two seq*h buffers without changing any operation.
+        let attn = a.clone();
+        let projected = norm.clone();
         let up = alloc(device, seq * m)?;
         let pixels = device.upload(bytemuck::cast_slice(&image.patches()))?;
         let mut run = Runner {
@@ -155,6 +159,8 @@ impl<A: Accelerator> VisionEncoder<A> {
             patches,
             0,
         )?;
+        // Pending commands retain this upload until its projection completes.
+        drop(pixels);
         let pos = &self.weights["backbone.embeddings.position_embedding"];
         run.dispatch(
             "vision_positions",
@@ -211,13 +217,19 @@ impl<A: Accelerator> VisionEncoder<A> {
                 seq * h / 2,
                 128,
             )?;
+            let (attention_kernel, attention_threads, query_tile) =
+                if h / c.num_attention_heads == 64 {
+                    ("vision_attention_64x16", 256, 16)
+                } else {
+                    ("vision_attention", 32, 8)
+                };
             run.dispatch(
-                "vision_attention",
+                attention_kernel,
                 &[&attn, &q, &k, &v],
                 &[seq, c.num_attention_heads, h / c.num_attention_heads],
                 &[],
-                seq.div_ceil(8) * c.num_attention_heads * 32,
-                32,
+                seq.div_ceil(query_tile) * c.num_attention_heads * attention_threads,
+                attention_threads,
             )?;
             run.linear(
                 &projected,
@@ -261,6 +273,9 @@ impl<A: Accelerator> VisionEncoder<A> {
             run.device.synchronize()?;
             progress(i + 1, c.num_hidden_layers);
         }
+        // Only the residual stream feeds the projector. The last layer has
+        // synchronized, so its other workspaces can be released now.
+        drop((a, norm, q, k, v, attn, projected, up));
         let merged = alloc(run.device, tokens * c.projection_hidden_dim)?;
         let features = alloc(run.device, tokens * c.text_hidden_size)?;
         // Skip CLS; the four native patches in a tile are already contiguous.

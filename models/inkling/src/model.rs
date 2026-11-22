@@ -682,17 +682,13 @@ impl<A: Accelerator> Inkling<A> {
         let partials =
             self.attention_workspace(self.batch * qh * capacity.div_ceil(128) * (d + 2))?;
         let profiles = self.w(&format!("{p}.rel_logits_proj.proj"));
-        // More score groups hide latency on small decode grids. Larger grids
-        // use fewer groups plus ordered value prefetch; prompt batches retain
-        // their original scheduling and all paths keep the same reductions.
-        let (partition_kernel, partition_threads) = if self.batch == 1 {
-            if parts <= 2 {
-                ("attention_partition_wide", 512)
-            } else {
-                ("attention_partition_prefetch", 256)
-            }
+        // More score groups hide latency on small decode grids. Both larger
+        // decode grids and prompt batches benefit from ordered value prefetch.
+        // All paths retain the same dot products, softmax and partition sums.
+        let (partition_kernel, partition_threads) = if self.batch == 1 && parts <= 2 {
+            ("attention_partition_wide", 512)
         } else {
-            ("attention_partition", 128)
+            ("attention_partition_prefetch", 256)
         };
         self.run(
             partition_kernel,
@@ -759,9 +755,24 @@ impl<A: Accelerator> Inkling<A> {
         let caps = [c.mlp_gate_softcap, c.mlp_up_softcap];
         let y = self.alloc(output_rows * top * self.batch)?;
         if let Some(groups) = groups {
+            // NVFP4 tables are already resident for decode. Reuse the same
+            // exact values in prefill without allocating another workspace.
             self.run(
-                "expert_matmul_tiled",
-                &[&y, &w, &scales, &factors, x, &groups.slots, &groups.tiles],
+                if format == 0 {
+                    "expert_matmul_nvfp4"
+                } else {
+                    "expert_matmul_tiled"
+                },
+                &[
+                    &y,
+                    &w,
+                    &scales,
+                    &factors,
+                    x,
+                    &groups.slots,
+                    &groups.tiles,
+                    &lookup,
+                ],
                 &[rows, cols, top, format, usize::from(down), self.batch],
                 &caps,
                 rows.div_ceil(32) * groups.max_tiles * 128,
