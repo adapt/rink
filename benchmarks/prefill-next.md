@@ -1,5 +1,9 @@
 # Prefill performance investigation
 
+This report records the experiments at `f5d1fd2`. The selected kernels and
+further improvements are now described in [Parallel prefill kernels](prefill-parallel.md).
+The patch and historical reproduction steps below apply to that earlier revision.
+
 The target is higher prefill throughput with the existing tensor-memory budget,
 FP32 activations and accumulation, native quantized weights, FP16 KV default,
 1,024-token batch limit and unchanged model schedule. This investigation uses
@@ -142,7 +146,8 @@ attention kernel, not a full model at that history.
 
 ## Reproduce
 
-Run these probes from the unpatched production checkout, one GPU job at a time:
+Use a separate checkout of `f5d1fd2` for these historical commands. Run GPU jobs
+one at a time:
 
 ```sh
 cargo run --release -- bench --context 262144 --prompt-tokens 8192 \

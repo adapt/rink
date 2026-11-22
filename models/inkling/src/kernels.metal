@@ -261,6 +261,26 @@ kernel void convolution(device float* y [[buffer(0)]], device const float* x [[b
         y[token*c+i]=v*rsqrt(float(1+k*(p.u[3]?2:1)));
     }
 }
+// Same ABI as convolution, but one thread per (token, channel). Read prior
+// chunks from the unchanged ring and this chunk directly from x. Commit the
+// final ring only in the following dispatch; updating it here would race readers.
+kernel void convolution_prefill(device float* y [[buffer(0)]], device const float* x [[buffer(1)]], device const float* w [[buffer(2)]], device const float* state [[buffer(3)]], device const float* dyn [[buffer(4)]], constant Params& p [[buffer(15)]], uint index [[thread_position_in_grid]]) {
+    uint c=p.u[0],k=p.u[1];if(index>=c*p.u[5])return;
+    uint token=index/c,i=index%c,pos=p.u[2]+token;float v=x[index];
+    for(uint lag=0;lag<k && lag<=pos;lag++){
+        float tap=p.u[3]?w[lag*c+i]+dyn[(token*(c/p.u[4])+i/p.u[4])*k+lag]:w[i*k+(k-1-lag)];
+        float input=lag<=token?x[(token-lag)*c+i]:state[((pos+k-lag)%k)*c+i];
+        v+=tap*input;
+    }
+    y[index]=v*rsqrt(float(1+k*(p.u[3]?2:1)));
+}
+// channels, taps, absolute position, batch. Preserve untouched slots for short
+// chunks and resets. Each thread writes a distinct final ring entry.
+kernel void convolution_commit(device float* state [[buffer(0)]], device const float* x [[buffer(1)]], constant Params& p [[buffer(15)]], uint index [[thread_position_in_grid]]) {
+    uint c=p.u[0],k=p.u[1],count=min(k,p.u[3]);if(index>=c*count)return;
+    uint token=p.u[3]-count+index/c,i=index%c;
+    state[((p.u[2]+token)%k)*c+i]=x[token*c+i];
+}
 // channels, taps, absolute position, batch, top_k (0 = plain input), add_residual.
 // Each channel owns its history across the entire chunk. Store the convolution's
 // input in the ring, before the convolution and residual addition, as in the

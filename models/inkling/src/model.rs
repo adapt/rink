@@ -379,12 +379,26 @@ impl<A: Accelerator> Inkling<A> {
         if self.batch > 1 {
             // Four-wide staging preserves each 8x8 accumulator's original
             // operation order, including short and partially filled tiles.
+            let wide = self.batch >= 512 && rows >= 384;
+            let tile = if wide {
+                if rows < 1024 { 32 } else { 64 }
+            } else {
+                16
+            };
             self.run(
-                "matmul_packed",
+                if wide {
+                    if tile == 32 {
+                        "matmul_prefill_m32"
+                    } else {
+                        "matmul_prefill_m64"
+                    }
+                } else {
+                    "matmul_packed"
+                },
                 &[&y, &w.buffer, x],
                 &[rows, cols, w.dtype, self.batch, offset],
                 &[],
-                rows.div_ceil(32) * self.batch.div_ceil(16) * 256,
+                rows.div_ceil(if wide { 64 } else { 32 }) * self.batch.div_ceil(tile) * 256,
                 256,
             )?;
             return Ok(y);
@@ -537,8 +551,13 @@ impl<A: Accelerator> Inkling<A> {
         };
         let history = self.caches[visit.cache].conv[state].clone();
         let y = self.alloc(channels * self.batch)?;
+        let parallel = self.batch >= 8;
         self.run(
-            "convolution",
+            if parallel {
+                "convolution_prefill"
+            } else {
+                "convolution"
+            },
             &[&y, x, &w, &history, &dyn_weights],
             &[
                 channels,
@@ -549,9 +568,19 @@ impl<A: Accelerator> Inkling<A> {
                 self.batch,
             ],
             &[],
-            channels,
+            channels * if parallel { self.batch } else { 1 },
             128,
         )?;
+        if parallel {
+            self.run(
+                "convolution_commit",
+                &[&history, x],
+                &[channels, k, self.position, self.batch],
+                &[],
+                channels * k.min(self.batch),
+                128,
+            )?;
+        }
         Ok(y)
     }
     fn clip(
@@ -792,16 +821,25 @@ impl<A: Accelerator> Inkling<A> {
         // More score groups hide latency on small decode grids. Both larger
         // decode grids and prompt batches benefit from ordered value prefetch.
         // All paths retain the same dot products, softmax and partition sums.
-        let (partition_kernel, partition_threads, query_tile, partition_heads) =
-            if local && d == 128 && qh == 3 * kh && self.batch >= 4 {
-                ("attention_partition_heads3", 256, 1, kh)
-            } else if !local && d == 128 && self.batch >= 4 && parts >= 8 {
-                ("attention_partition_queries4", 256, 4, qh)
-            } else if self.batch == 1 && parts <= 2 {
-                ("attention_partition_wide", 512, 1, qh)
-            } else {
-                ("attention_partition_prefetch", 256, 1, qh)
-            };
+        let (partition_kernel, partition_threads, query_tile, partition_heads) = if local
+            && d == 128
+            && qh == 3 * kh
+            && self.batch >= 128
+            && capacity >= 132
+            && n == capacity
+        {
+            ("attention_partition_local_queries4_heads3", 256, 4, kh)
+        } else if local && d == 128 && qh == 3 * kh && self.batch >= 4 {
+            ("attention_partition_heads3", 256, 1, kh)
+        } else if !local && d == 128 && qh == 3 * kh && self.batch >= 4 && parts >= 8 {
+            ("attention_partition_queries4_heads3", 256, 4, kh)
+        } else if !local && d == 128 && self.batch >= 4 && parts >= 8 {
+            ("attention_partition_queries4", 256, 4, qh)
+        } else if self.batch == 1 && parts <= 2 {
+            ("attention_partition_wide", 512, 1, qh)
+        } else {
+            ("attention_partition_prefetch", 256, 1, qh)
+        };
         let (finish_kernel, finish_threads) = if self.batch > 1 && (129..=2048).contains(&parts) {
             ("attention_finish_cached", 128)
         } else {
@@ -881,9 +919,11 @@ impl<A: Accelerator> Inkling<A> {
         if let Some(groups) = groups {
             // NVFP4 tables are already resident for decode. Reuse the same
             // exact values in prefill without allocating another workspace.
-            let threads = if groups.tile_size == 32 { 256 } else { 128 };
+            let threads = if groups.tile_size >= 32 { 256 } else { 128 };
             self.run(
-                if groups.tile_size == 32 {
+                if groups.tile_size == 64 {
+                    "expert_matmul_prefill"
+                } else if groups.tile_size == 32 {
                     "expert_matmul_m32k32"
                 } else if format == 0 {
                     "expert_matmul_nvfp4"
@@ -902,7 +942,9 @@ impl<A: Accelerator> Inkling<A> {
                 ],
                 &[rows, cols, top, format, usize::from(down), self.batch],
                 &caps,
-                rows.div_ceil(32) * groups.max_tiles * threads,
+                rows.div_ceil(if groups.tile_size == 64 { 64 } else { 32 })
+                    * groups.max_tiles
+                    * threads,
                 threads,
             )?;
         } else {
@@ -955,7 +997,7 @@ impl<A: Accelerator> Inkling<A> {
         let count = self.batch * top;
         // Larger tiles pay off when enough tokens reuse each expert. Keep small
         // batches on eight-slot tiles to avoid multiplying mostly padding.
-        let tile_size = if self.batch >= 512 { 32 } else { 8 };
+        let tile_size = if self.batch >= 512 { 64 } else { 8 };
         // Sum ceil(count_per_expert / tile_size), bounded by total slots plus
         // at most tile_size - 1 padding slots for each nonempty expert.
         let max_tiles = (count + (tile_size - 1) * experts.min(count)) / tile_size;

@@ -41,6 +41,100 @@ fn close(a: &[f32], b: &[f32], tol: f32) {
 
 #[test]
 #[ignore = "requires a Metal GPU"]
+fn parallel_convolution_preserves_order_history_and_reset() {
+    let mut d = Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut d).unwrap();
+    let vals = |n: usize, phase: usize| -> Vec<f32> {
+        (0..n)
+            .map(|i| ((i * 13 + phase) % 37) as f32 / 41. - 0.4)
+            .collect()
+    };
+    for channels in [1usize, 17, 128, 129] {
+        let dim = if channels % 8 == 0 { 8 } else { 1 };
+        for taps in [1usize, 4, 7] {
+            for dynamic in [false, true] {
+                let weights = upload(&mut d, &vals(channels * taps, 5));
+                let initial = vec![f32::NAN; channels * taps + 17];
+                let old_state = upload(&mut d, &initial);
+                let new_state = upload(&mut d, &initial);
+                let mut position = 0;
+                for (batch, reset) in [
+                    (1, false),
+                    (2, false),
+                    (8, false),
+                    (1027, false),
+                    (3, false),
+                    (9, true),
+                    (7, false),
+                ] {
+                    if reset {
+                        position = 0;
+                    }
+                    let n = channels * batch;
+                    let input = upload(&mut d, &vals(n, position));
+                    let dyn_weights =
+                        upload(&mut d, &vals(batch * (channels / dim) * taps, position + 7));
+                    let old = upload(&mut d, &vec![f32::NAN; n + 17]);
+                    let new = upload(&mut d, &vec![f32::NAN; n + 17]);
+                    let geometry = Params::new(
+                        &[channels, taps, position, usize::from(dynamic), dim, batch],
+                        &[],
+                    );
+                    // SAFETY: distinct output/state buffers; complete static and
+                    // dynamic weights. Commit runs after all old-history readers.
+                    unsafe {
+                        kernels
+                            .run(
+                                &mut d,
+                                "convolution",
+                                &[&old, &input, &weights, &old_state, &dyn_weights],
+                                geometry,
+                                channels,
+                                128,
+                            )
+                            .unwrap();
+                        kernels
+                            .run(
+                                &mut d,
+                                "convolution_prefill",
+                                &[&new, &input, &weights, &new_state, &dyn_weights],
+                                geometry,
+                                n,
+                                128,
+                            )
+                            .unwrap();
+                        kernels
+                            .run(
+                                &mut d,
+                                "convolution_commit",
+                                &[&new_state, &input],
+                                Params::new(&[channels, taps, position, batch], &[]),
+                                channels * taps.min(batch),
+                                128,
+                            )
+                            .unwrap();
+                    }
+                    let expected = d.read(&old).unwrap();
+                    let actual = d.read(&new).unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "channels={channels} taps={taps} dynamic={dynamic} position={position} batch={batch}"
+                    );
+                    assert!(
+                        actual[n * 4..]
+                            .chunks_exact(4)
+                            .all(|x| x == f32::NAN.to_le_bytes())
+                    );
+                    assert_eq!(d.read(&new_state).unwrap(), d.read(&old_state).unwrap());
+                    position += batch;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
 fn fused_residual_convolution_preserves_mixtures_history_chunks_and_reset() {
     let mut d = Metal::new().unwrap();
     let k = Kernels::compile(&mut d).unwrap();
@@ -420,8 +514,10 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                             "NVFP4 grouped: rows={rows} cols={cols} batch={batch} sparse={sparse} down={down}"
                         );
                     }
-                    {
-                        let (name, tile_size) = ("expert_matmul_m32k32", 32usize);
+                    for (name, tile_size, row_tile) in [
+                        ("expert_matmul_m32k32", 32usize, 32usize),
+                        ("expert_matmul_prefill", 64, 64),
+                    ] {
                         let max_tiles = (slots + (tile_size - 1) * experts.min(slots)) / tile_size;
                         let large_tiles =
                             d.upload(&vec![0xff; (1 + 2 * max_tiles + 17) * 4]).unwrap();
@@ -452,7 +548,7 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                                     &table,
                                 ],
                                 p,
-                                rows.div_ceil(32) * max_tiles * 256,
+                                rows.div_ceil(row_tile) * max_tiles * 256,
                                 256,
                             )
                             .unwrap();
@@ -2040,16 +2136,28 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
 #[test]
 #[ignore = "requires a Metal GPU"]
 fn shared_query_attention_preserves_partials_and_group_tails() {
-    shared_attention_preserves_partials(false);
+    shared_attention_preserves_partials(false, false);
 }
 
 #[test]
 #[ignore = "requires a Metal GPU"]
 fn shared_head_attention_preserves_ring_wraps_and_query_groups() {
-    shared_attention_preserves_partials(true);
+    shared_attention_preserves_partials(true, false);
 }
 
-fn shared_attention_preserves_partials(local: bool) {
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn shared_full_queries_and_heads_preserve_partials_and_group_tails() {
+    shared_attention_preserves_partials(false, true);
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn shared_local_queries_and_heads_preserve_partitions_and_ring_wraps() {
+    shared_attention_preserves_partials(true, true);
+}
+
+fn shared_attention_preserves_partials(local: bool, queries_and_heads: bool) {
     let mut device = Metal::new().unwrap();
     let kernels = Kernels::compile(&mut device).unwrap();
     let (qh, kh, dim, rel_dim, extent) = (6, 2, 128, 17, 1024);
@@ -2137,7 +2245,16 @@ fn shared_attention_preserves_partials(local: bool) {
                     .unwrap();
             }
             let expected_output = device.read(&reference_output).unwrap();
-            let (name, threads) = if local {
+            let (name, threads) = if queries_and_heads {
+                (
+                    if local {
+                        "attention_partition_local_queries4_heads3"
+                    } else {
+                        "attention_partition_queries4_heads3"
+                    },
+                    256,
+                )
+            } else if local {
                 ("attention_partition_heads3", 256)
             } else {
                 ("attention_partition_queries4", 256)
@@ -2168,10 +2285,13 @@ fn shared_attention_preserves_partials(local: bool) {
                                     &profiles,
                                 ],
                                 p,
-                                if local {
+                                if local && !queries_and_heads {
                                     count * kh * parts * threads
                                 } else {
-                                    count.div_ceil(4) * qh * parts * threads
+                                    count.div_ceil(4)
+                                        * if queries_and_heads { kh } else { qh }
+                                        * parts
+                                        * threads
                                 },
                                 threads,
                             )
@@ -2422,26 +2542,31 @@ fn projection_scheduling_preserves_every_output_bit() {
                         );
                     }
                     if batch > 1 {
-                        let name = "matmul_packed";
-                        let packed = upload(&mut d, &initial);
-                        // SAFETY: four-wide staging handles partial vectors;
-                        // output tile geometry and guards are unchanged.
-                        unsafe {
-                            k.run(
-                                &mut d,
-                                name,
-                                &[&packed, &weights, &input],
-                                p,
-                                rows.div_ceil(32) * batch.div_ceil(16) * 256,
-                                256,
-                            )
-                            .unwrap();
+                        for (name, tile_m, tile_n) in [
+                            ("matmul_packed", 16, 32),
+                            ("matmul_prefill_m32", 32, 64),
+                            ("matmul_prefill_m64", 64, 64),
+                        ] {
+                            let packed = upload(&mut d, &initial);
+                            // SAFETY: four-wide staging handles partial vectors;
+                            // output tile geometry and guards are unchanged.
+                            unsafe {
+                                k.run(
+                                    &mut d,
+                                    name,
+                                    &[&packed, &weights, &input],
+                                    p,
+                                    rows.div_ceil(tile_n) * batch.div_ceil(tile_m) * 256,
+                                    256,
+                                )
+                                .unwrap();
+                            }
+                            assert_eq!(
+                                d.read(&packed).unwrap(),
+                                d.read(&old).unwrap(),
+                                "{name}: dtype={dtype} rows={rows} cols={cols} batch={batch} offset={offset}"
+                            );
                         }
-                        assert_eq!(
-                            d.read(&packed).unwrap(),
-                            d.read(&old).unwrap(),
-                            "{name}: dtype={dtype} rows={rows} cols={cols} batch={batch} offset={offset}"
-                        );
                     }
                 }
             }

@@ -1,0 +1,1012 @@
+{
+  "date": "2026-11-22",
+  "baseline_revision": "f5d1fd2",
+  "device": "Apple M4 Max, 40 GPU cores, 48 GiB unified memory",
+  "method": "Isolated native-size kernels with synthetic values. Matrix expert routes are balanced; repeated weights may remain cached. One warmup and four alternating timing rounds. Matrix trials contain four dispatches each; attention and convolution use one operation per trial, including convolution history commit. Independently poisoned outputs and guards are compared bit for bit. These are not full-model speedups.",
+  "matrix_records_checked_including_experiments": 104,
+  "matrix": [
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4608,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "baseline",
+      "kind": "dense",
+      "median_gpu_us": 201.6093785641715,
+      "rows": 64,
+      "trials_gpu_us": [
+        189.73959959112108,
+        189.77082800120115,
+        213.44792912714183,
+        216.3125027436763
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4608,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "matmul_prefill_m32",
+      "kind": "dense",
+      "median_gpu_us": 363.7812478700653,
+      "rows": 64,
+      "trials_gpu_us": [
+        332.45832310058177,
+        357.9166659619659,
+        369.6458297781646,
+        378.34374234080315
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4608,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "matmul_prefill_m64",
+      "kind": "dense",
+      "median_gpu_us": 523.5312564764172,
+      "rows": 64,
+      "trials_gpu_us": [
+        488.16666821949184,
+        497.15625937096775,
+        549.9062535818666,
+        554.7187465708703
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "baseline",
+      "kind": "dense",
+      "median_gpu_us": 406.9791757501662,
+      "rows": 384,
+      "trials_gpu_us": [
+        406.03126399219036,
+        406.37500933371484,
+        407.5833421666175,
+        407.8541533090174
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "matmul_prefill_m32",
+      "kind": "dense",
+      "median_gpu_us": 332.79166382271796,
+      "rows": 384,
+      "trials_gpu_us": [
+        314.1041670460254,
+        314.42707404494286,
+        351.1562536004931,
+        351.53122735209763
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "matmul_prefill_m64",
+      "kind": "dense",
+      "median_gpu_us": 349.65625673066825,
+      "rows": 384,
+      "trials_gpu_us": [
+        325.71874908171594,
+        335.81251045688987,
+        363.5000030044466,
+        364.2916854005307
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "baseline",
+      "kind": "dense",
+      "median_gpu_us": 685.0989593658596,
+      "rows": 1024,
+      "trials_gpu_us": [
+        684.124999679625,
+        684.1770664323121,
+        686.0208522994071,
+        740.5312499031425
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "matmul_prefill_m32",
+      "kind": "dense",
+      "median_gpu_us": 557.5468821916729,
+      "rows": 1024,
+      "trials_gpu_us": [
+        557.3437374550849,
+        557.406252482906,
+        557.6875119004399,
+        580.6875124108046
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "matmul_prefill_m64",
+      "kind": "dense",
+      "median_gpu_us": 527.2395792417228,
+      "rows": 1024,
+      "trials_gpu_us": [
+        526.5833460725844,
+        527.0937399473041,
+        527.3854185361415,
+        527.7812597341835
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "baseline",
+      "kind": "dense",
+      "median_gpu_us": 2002.8958388138562,
+      "rows": 3072,
+      "trials_gpu_us": [
+        2001.5729242004454,
+        2002.2187673021108,
+        2003.5729103256017,
+        2010.7812597416341
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "matmul_prefill_m32",
+      "kind": "dense",
+      "median_gpu_us": 1607.859376235865,
+      "rows": 3072,
+      "trials_gpu_us": [
+        1606.0000052675605,
+        1607.5000166893005,
+        1608.2187357824296,
+        1610.3750094771385
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "matmul_prefill_m64",
+      "kind": "dense",
+      "median_gpu_us": 1446.7968721874058,
+      "rows": 3072,
+      "trials_gpu_us": [
+        1444.9687441810966,
+        1446.5937565546483,
+        1446.9999878201634,
+        1451.9062533508986
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "baseline",
+      "kind": "dense",
+      "median_gpu_us": 2007.0052123628557,
+      "rows": 2304,
+      "trials_gpu_us": [
+        2005.4791530128568,
+        2006.4479031134397,
+        2007.5625216122717,
+        2010.010415688157
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "matmul_prefill_m32",
+      "kind": "dense",
+      "median_gpu_us": 1605.989586096257,
+      "rows": 2304,
+      "trials_gpu_us": [
+        1605.8229375630617,
+        1605.8437468018383,
+        1606.1354253906757,
+        1632.6875193044543
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "matmul_prefill_m64",
+      "kind": "dense",
+      "median_gpu_us": 1474.3229112355039,
+      "rows": 2304,
+      "trials_gpu_us": [
+        1466.8958319816738,
+        1468.9062372781336,
+        1479.739585192874,
+        1490.9062592778355
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 0,
+      "kernel": "baseline",
+      "kind": "expert",
+      "median_gpu_us": 11900.40104847867,
+      "rows": 2304,
+      "trials_gpu_us": [
+        11345.500010065734,
+        11347.291670972481,
+        12453.51042598486,
+        12798.74998726882
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 0,
+      "kernel": "expert_matmul_prefill",
+      "kind": "expert",
+      "median_gpu_us": 8682.666666572914,
+      "rows": 2304,
+      "trials_gpu_us": [
+        8674.750017235056,
+        8676.218742039055,
+        8689.114591106772,
+        9308.000007877126
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1152,
+      "device_buffer_allocations": 0,
+      "down": true,
+      "format": 0,
+      "kernel": "baseline",
+      "kind": "expert",
+      "median_gpu_us": 5756.963539170101,
+      "rows": 2304,
+      "trials_gpu_us": [
+        5744.89583959803,
+        5755.312507972121,
+        5758.614570368081,
+        5761.125008575618
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1152,
+      "device_buffer_allocations": 0,
+      "down": true,
+      "format": 0,
+      "kernel": "expert_matmul_prefill",
+      "kind": "expert",
+      "median_gpu_us": 4402.265622047707,
+      "rows": 2304,
+      "trials_gpu_us": [
+        4399.708326673135,
+        4399.968747748062,
+        4404.562496347353,
+        4421.531251864508
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "baseline",
+      "kind": "expert",
+      "median_gpu_us": 13082.041652523912,
+      "rows": 2304,
+      "trials_gpu_us": [
+        13069.427077425644,
+        13075.468741590157,
+        13088.614563457668,
+        13122.250005835667
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "down": false,
+      "format": 1,
+      "kernel": "expert_matmul_prefill",
+      "kind": "expert",
+      "median_gpu_us": 9267.427085433155,
+      "rows": 2304,
+      "trials_gpu_us": [
+        9229.208342730999,
+        9245.38541585207,
+        9289.46875501424,
+        9321.187506429851
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1152,
+      "device_buffer_allocations": 0,
+      "down": true,
+      "format": 1,
+      "kernel": "baseline",
+      "kind": "expert",
+      "median_gpu_us": 6595.046870643273,
+      "rows": 2304,
+      "trials_gpu_us": [
+        6594.062491785735,
+        6594.812497496605,
+        6595.281243789941,
+        6663.041684078053
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1152,
+      "device_buffer_allocations": 0,
+      "down": true,
+      "format": 1,
+      "kernel": "expert_matmul_prefill",
+      "kind": "expert",
+      "median_gpu_us": 4682.010403485037,
+      "rows": 2304,
+      "trials_gpu_us": [
+        4667.98958950676,
+        4669.2187315784395,
+        4694.802075391635,
+        4745.166661450639
+      ]
+    }
+  ],
+  "local_attention": [
+    {
+      "batch": 128,
+      "fp16": true,
+      "history": 0,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.0002183124888688326,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.00021829165052622557,
+        0.00021845835726708174,
+        0.0002172082895413041,
+        0.0002183333272114396
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 128,
+      "fp16": true,
+      "history": 0,
+      "kernel": "attention_partition_heads3",
+      "median_gpu_seconds": 0.00011837499914690852,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.00011912500485777855,
+        0.00011812499724328518,
+        0.00011862500105053186,
+        0.00011787505354732275
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 128,
+      "fp16": true,
+      "history": 0,
+      "kernel": "attention_partition_local_queries4_heads3",
+      "median_gpu_seconds": 0.0001366250216960907,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.00013699999544769526,
+        0.00013687508180737495,
+        0.00013474992010742426,
+        0.00013637496158480644
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 0,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.011426395853050053,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.011427291668951511,
+        0.011427958379499614,
+        0.011425458244048059,
+        0.011425500037148595
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 0,
+      "kernel": "attention_partition_heads3",
+      "median_gpu_seconds": 0.005433187470771372,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.005436124978587031,
+        0.005432833335362375,
+        0.005431708414107561,
+        0.00543354160618037
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 0,
+      "kernel": "attention_partition_local_queries4_heads3",
+      "median_gpu_seconds": 0.0048491249908693135,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.0048461665865033865,
+        0.004903750028461218,
+        0.004850124940276146,
+        0.004848125041462481
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 128,
+      "fp16": true,
+      "history": 1024,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.0034678541705943644,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.003467583330348134,
+        0.003466791706159711,
+        0.0034705416765064,
+        0.0034681250108405948
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 128,
+      "fp16": true,
+      "history": 1024,
+      "kernel": "attention_partition_heads3",
+      "median_gpu_seconds": 0.0015761666581965983,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.001575249945744872,
+        0.001575958332978189,
+        0.0015770833706483245,
+        0.0015763749834150076
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 128,
+      "fp16": true,
+      "history": 1024,
+      "kernel": "attention_partition_local_queries4_heads3",
+      "median_gpu_seconds": 0.0012580624897964299,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.0012577499728649855,
+        0.0012556667206808925,
+        0.0014101667329668999,
+        0.0012583750067278743
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 1024,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.024979083333164454,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.025039833271875978,
+        0.02497466665226966,
+        0.02497862500604242,
+        0.024979541660286486
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 1024,
+      "kernel": "attention_partition_heads3",
+      "median_gpu_seconds": 0.011550604191143066,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.011502708308398724,
+        0.011551333358511329,
+        0.011549875023774803,
+        0.011552583309821784
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 1024,
+      "kernel": "attention_partition_local_queries4_heads3",
+      "median_gpu_seconds": 0.009738833352457732,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.009712624945677817,
+        0.009747833362780511,
+        0.00974000000860542,
+        0.009737666696310043
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 261120,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.02504070830764249,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.025286749936640263,
+        0.02503837493713945,
+        0.025043041678145528,
+        0.024980083340778947
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 261120,
+      "kernel": "attention_partition_heads3",
+      "median_gpu_seconds": 0.011505041678901762,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.011505958391353488,
+        0.011504124966450036,
+        0.011501749977469444,
+        0.011506000068038702
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 261120,
+      "kernel": "attention_partition_local_queries4_heads3",
+      "median_gpu_seconds": 0.009794541634619236,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.009885666659101844,
+        0.00980337499640882,
+        0.009759625070728362,
+        0.009785708272829652
+      ],
+      "window": 1024
+    }
+  ],
+  "convolution": [
+    {
+      "batch": 8,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution",
+      "median_gpu_seconds": 8.854141924530268e-06,
+      "trials_gpu_seconds": [
+        9.00006853044033e-06,
+        8.833245374262333e-06,
+        8.750008419156075e-06,
+        8.875038474798203e-06
+      ]
+    },
+    {
+      "batch": 8,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 6.229151040315628e-06,
+      "trials_gpu_seconds": [
+        6.375019438564777e-06,
+        6.249989382922649e-06,
+        6.166752427816391e-06,
+        6.208312697708607e-06
+      ]
+    },
+    {
+      "batch": 8,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution",
+      "median_gpu_seconds": 1.4000048395246267e-05,
+      "trials_gpu_seconds": [
+        1.325004268437624e-05,
+        1.4708261005580425e-05,
+        1.3583339750766754e-05,
+        1.441675703972578e-05
+      ]
+    },
+    {
+      "batch": 8,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 7.83335417509079e-06,
+      "trials_gpu_seconds": [
+        8.749892003834248e-06,
+        7.2499969974160194e-06,
+        8.41671135276556e-06,
+        6.9999368861317635e-06
+      ]
+    },
+    {
+      "batch": 128,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution",
+      "median_gpu_seconds": 9.231251897290349e-05,
+      "trials_gpu_seconds": [
+        9.175005834549665e-05,
+        9.287497960031033e-05,
+        9.30416863411665e-05,
+        9.087496437132359e-05
+      ]
+    },
+    {
+      "batch": 128,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 1.231249189004302e-05,
+      "trials_gpu_seconds": [
+        1.2125005014240742e-05,
+        1.279159914702177e-05,
+        1.1625001206994057e-05,
+        1.2499978765845299e-05
+      ]
+    },
+    {
+      "batch": 128,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution",
+      "median_gpu_seconds": 0.00015639577759429812,
+      "trials_gpu_seconds": [
+        0.00015637499745935202,
+        0.00015633332077413797,
+        0.00015641655772924423,
+        0.00015650002751499414
+      ]
+    },
+    {
+      "batch": 128,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 1.3562501408159733e-05,
+      "trials_gpu_seconds": [
+        1.3541663065552711e-05,
+        1.341674942523241e-05,
+        1.3666576705873013e-05,
+        1.3583339750766754e-05
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution",
+      "median_gpu_seconds": 0.0007277291733771563,
+      "trials_gpu_seconds": [
+        0.0007293333765119314,
+        0.000725416699424386,
+        0.0007261666469275951,
+        0.0007292916998267174
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 4.891667049378157e-05,
+      "trials_gpu_seconds": [
+        4.9166614189743996e-05,
+        4.900002386420965e-05,
+        4.883331712335348e-05,
+        4.862493369728327e-05
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution",
+      "median_gpu_seconds": 0.0012195000308565795,
+      "trials_gpu_seconds": [
+        0.0012202499201521277,
+        0.001219124998897314,
+        0.001219875062815845,
+        0.0012188750552013516
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "channels": 1024,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 6.799999391660094e-05,
+      "trials_gpu_seconds": [
+        6.812508217990398e-05,
+        6.833334919065237e-05,
+        6.78749056532979e-05,
+        6.77499920129776e-05
+      ]
+    },
+    {
+      "batch": 8,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution",
+      "median_gpu_seconds": 8.875038474798203e-06,
+      "trials_gpu_seconds": [
+        8.791685104370117e-06,
+        8.875038474798203e-06,
+        8.875038474798203e-06,
+        8.916598744690418e-06
+      ]
+    },
+    {
+      "batch": 8,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 6.333342753350735e-06,
+      "trials_gpu_seconds": [
+        6.375019438564777e-06,
+        6.375019438564777e-06,
+        6.249989382922649e-06,
+        6.291666068136692e-06
+      ]
+    },
+    {
+      "batch": 8,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution",
+      "median_gpu_seconds": 1.3124954421073198e-05,
+      "trials_gpu_seconds": [
+        1.3333396054804325e-05,
+        1.3125012628734112e-05,
+        1.3124896213412285e-05,
+        1.3041659258306026e-05
+      ]
+    },
+    {
+      "batch": 8,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 7.083290256559849e-06,
+      "trials_gpu_seconds": [
+        7.208320312201977e-06,
+        7.1249669417738914e-06,
+        7.00005330145359e-06,
+        7.041613571345806e-06
+      ]
+    },
+    {
+      "batch": 128,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution",
+      "median_gpu_seconds": 9.043753379955888e-05,
+      "trials_gpu_seconds": [
+        9.037507697939873e-05,
+        9.037507697939873e-05,
+        9.049999061971903e-05,
+        9.049999061971903e-05
+      ]
+    },
+    {
+      "batch": 128,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 1.7437560018152e-05,
+      "trials_gpu_seconds": [
+        1.7375103197991848e-05,
+        1.7291633412241936e-05,
+        1.750001683831215e-05,
+        1.750001683831215e-05
+      ]
+    },
+    {
+      "batch": 128,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution",
+      "median_gpu_seconds": 0.0001491457805968821,
+      "trials_gpu_seconds": [
+        0.000149125000461936,
+        0.0001491665607318282,
+        0.0001492499141022563,
+        0.000149125000461936
+      ]
+    },
+    {
+      "batch": 128,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 2.335419412702322e-05,
+      "trials_gpu_seconds": [
+        2.337503246963024e-05,
+        2.33333557844162e-05,
+        2.3250002413988113e-05,
+        2.3416709154844284e-05
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution",
+      "median_gpu_seconds": 0.0007014583679847419,
+      "trials_gpu_seconds": [
+        0.0007014167495071888,
+        0.0007009999826550484,
+        0.0007016249001026154,
+        0.0007014999864622951
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": false,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 9.754166239872575e-05,
+      "trials_gpu_seconds": [
+        9.762495756149292e-05,
+        9.762495756149292e-05,
+        9.737501386553049e-05,
+        9.745836723595858e-05
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution",
+      "median_gpu_seconds": 0.0011694374843500555,
+      "trials_gpu_seconds": [
+        0.0011694999411702156,
+        0.0011693750275298953,
+        0.0011687499936670065,
+        0.0011696250876411796
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "channels": 2304,
+      "device_buffer_allocations": 0,
+      "dynamic": true,
+      "kernel": "convolution_prefill_and_commit",
+      "median_gpu_seconds": 0.00014381250366568565,
+      "trials_gpu_seconds": [
+        0.00014379166532307863,
+        0.00014383334200829268,
+        0.00014399993233382702,
+        0.0001436666352674365
+      ]
+    }
+  ]
+}

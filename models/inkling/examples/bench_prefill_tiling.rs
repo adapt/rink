@@ -1,4 +1,4 @@
-//! Benchmark-only FP32 GEMM experiments; production dispatch is unchanged.
+//! Compare baseline FP32 GEMM tiles, experimental sizes and selected prefill kernels.
 //! Native dimensions, one warmup and four alternating timing rounds. Exact
 //! outputs and guard bytes are checked. Cached synthetic weights are not an
 //! end-to-end throughput prediction.
@@ -62,9 +62,21 @@ mod metal {
         for &(m, n, k) in SHAPES {
             for (prefix, target) in [("dense", &mut dense), ("expert", &mut expert)] {
                 let name = format!("{prefix}_{m}_{n}_{k}");
-                target.push((name.clone(), d.compile(&library, &name)?));
+                target.push((name.clone(), d.compile(&library, &name)?, m, n));
             }
         }
+        for (name, m, n) in [
+            ("matmul_prefill_m32", 32, 64),
+            ("matmul_prefill_m64", 64, 64),
+        ] {
+            dense.push((name.to_string(), d.compile(&SOURCE, name)?, m, n));
+        }
+        expert.push((
+            "expert_matmul_prefill".to_string(),
+            d.compile(&SOURCE, "expert_matmul_prefill")?,
+            64,
+            64,
+        ));
         let mut results = Vec::new();
         let batch = 1024usize;
         // Dense BF16 weights and both native expert quantization formats.
@@ -176,10 +188,10 @@ mod metal {
                     } else {
                         samples.len() - 1 - step
                     };
-                    let (m, n, _) = if index == 0 {
-                        (if is_expert { 32 } else { 16 }, 32, 32)
+                    let (m, n) = if index == 0 {
+                        (if is_expert { 32 } else { 16 }, 32)
                     } else {
-                        SHAPES[index - 1]
+                        (candidates[index - 1].2, candidates[index - 1].3)
                     };
                     if is_expert {
                         // SAFETY: tile buffer covers the smallest candidate's worst-case list.
@@ -233,6 +245,17 @@ mod metal {
                                     tile_count * rows.div_ceil(n) * 256,
                                     256,
                                 )?;
+                            } else if !is_expert
+                                && candidates[index - 1].0.starts_with("matmul_prefill_")
+                            {
+                                production.run(
+                                    &mut d,
+                                    &candidates[index - 1].0,
+                                    &[&y, &w, &x],
+                                    Params::new(&[rows, cols, format, batch, 0], &[]),
+                                    tile_count * rows.div_ceil(n) * 256,
+                                    256,
+                                )?;
                             } else {
                                 launch(
                                     &mut d,
@@ -259,7 +282,7 @@ mod metal {
                         } else {
                             ensure!(
                                 actual == expected,
-                                "{kind} candidate {index} differs from production"
+                                "{kind} candidate {index} differs from baseline"
                             );
                         }
                     }
@@ -268,7 +291,7 @@ mod metal {
             for (i, samples) in samples.iter_mut().enumerate() {
                 samples.sort_by(f64::total_cmp);
                 let name = if i == 0 {
-                    "production"
+                    "baseline"
                 } else {
                     &candidates[i - 1].0
                 };

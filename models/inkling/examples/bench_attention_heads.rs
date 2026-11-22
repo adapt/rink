@@ -38,7 +38,8 @@ fn main() -> anyhow::Result<()> {
         drop(cache);
         let visible = (position + batch).min(length);
         let parts = visible.div_ceil(128);
-        let partials = device.allocate(batch * qh * parts * (dim + 2) * 4)?;
+        let output_len = batch * qh * parts * (dim + 2) + 64;
+        let partials = device.allocate(output_len * 4)?;
         let geometry = Params::new(
             &[
                 qh, kh, dim, position, length, visible, rel_dim, extent, parts, batch, 1,
@@ -48,13 +49,26 @@ fn main() -> anyhow::Result<()> {
         let candidates = [
             ("attention_partition_prefetch", 256, 1, qh),
             ("attention_partition_heads3", 256, 1, kh),
+            ("attention_partition_local_queries4_heads3", 256, 4, kh),
         ];
         let mut reference = Vec::new();
-        let mut times = [Vec::new(), Vec::new()];
+        let mut times = vec![Vec::new(); candidates.len()];
         for trial in 0..5 {
-            for i in 0..2 {
-                let index = if trial % 2 == 0 { i } else { 1 - i };
+            for i in 0..candidates.len() {
+                let index = if trial % 2 == 0 {
+                    i
+                } else {
+                    candidates.len() - 1 - i
+                };
                 let (name, threads, tile, heads) = candidates[index];
+                if trial == 0 {
+                    // SAFETY: initialize every output and guard independently.
+                    unsafe {
+                        device.initialize_f32(&partials, output_len, |out| {
+                            out.fill(std::mem::MaybeUninit::new(f32::from_bits(u32::MAX)))
+                        })?;
+                    }
+                }
                 device.reset_stats();
                 // SAFETY: native sliding-window geometry, distinct complete KV
                 // buffers, complete fresh rows and a full partition workspace.
@@ -75,6 +89,10 @@ fn main() -> anyhow::Result<()> {
                     times[index].push(device.stats().gpu_seconds);
                 } else {
                     let actual = device.read(&partials)?;
+                    anyhow::ensure!(
+                        actual[(output_len - 64) * 4..].iter().all(|&b| b == 0xff),
+                        "attention guard overwritten"
+                    );
                     if index == 0 {
                         reference = actual;
                     } else {
