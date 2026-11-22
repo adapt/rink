@@ -1,4 +1,5 @@
 use crate::{
+    PrefillProgress,
     checkpoint::Checkpoint,
     config::{Config, TextConfig, Visit},
     image::Image,
@@ -1159,21 +1160,38 @@ impl<A: Accelerator> Inkling<A> {
         );
         Ok(())
     }
-    fn prefill_hidden(&mut self, tokens: &[u32]) -> Result<A::Buffer> {
+    fn prefill_hidden(
+        &mut self,
+        tokens: &[u32],
+        progress: &mut dyn FnMut(PrefillProgress),
+    ) -> Result<A::Buffer> {
         self.validate_tokens(tokens)?;
         self.failed = true;
+        progress(PrefillProgress::Prompt {
+            completed_tokens: 0,
+            total_tokens: tokens.len(),
+        });
         let mut hidden = None;
         for (i, chunk) in tokens.chunks(32).enumerate() {
             hidden = Some(self.hidden(chunk)?);
             self.position += chunk.len();
             if (i + 1) * 32 < tokens.len() {
                 self.device.synchronize()?;
+                progress(PrefillProgress::Prompt {
+                    completed_tokens: (i + 1) * 32,
+                    total_tokens: tokens.len(),
+                });
             }
         }
         Ok(hidden.expect("nonempty prompt"))
     }
 
-    fn prefill_image_hidden(&mut self, tokens: &[u32], image: &Image) -> Result<A::Buffer> {
+    fn prefill_image_hidden(
+        &mut self,
+        tokens: &[u32],
+        image: &Image,
+        progress: &mut dyn FnMut(PrefillProgress),
+    ) -> Result<A::Buffer> {
         self.validate_tokens(tokens)?;
         let config = self
             .config
@@ -1197,14 +1215,27 @@ impl<A: Accelerator> Inkling<A> {
         );
         self.failed = true;
         if self.vision.is_none() {
+            progress(PrefillProgress::LoadingImageEncoder);
             let checkpoint = Checkpoint::open(&self.directory)?;
             self.vision = Some(VisionEncoder::load(&mut self.device, &checkpoint, config)?);
+            progress(PrefillProgress::ImageEncoderLoaded);
         }
-        let features =
-            self.vision
-                .as_ref()
-                .unwrap()
-                .encode(&mut self.device, &self.kernels, image)?;
+        let features = self.vision.as_ref().unwrap().encode_with_progress(
+            &mut self.device,
+            &self.kernels,
+            image,
+            |completed_layers, total_layers| {
+                progress(PrefillProgress::ImageEncoding {
+                    completed_layers,
+                    total_layers,
+                });
+            },
+        )?;
+        progress(PrefillProgress::ImageEncoded);
+        progress(PrefillProgress::Prompt {
+            completed_tokens: 0,
+            total_tokens: tokens.len(),
+        });
         let mut hidden = None;
         for (i, chunk) in tokens.chunks(32).enumerate() {
             let offset = i * 32;
@@ -1215,6 +1246,10 @@ impl<A: Accelerator> Inkling<A> {
             self.position += chunk.len();
             if offset + chunk.len() < tokens.len() {
                 self.device.synchronize()?;
+                progress(PrefillProgress::Prompt {
+                    completed_tokens: offset + chunk.len(),
+                    total_tokens: tokens.len(),
+                });
             }
         }
         Ok(hidden.expect("nonempty prompt"))
@@ -1223,16 +1258,40 @@ impl<A: Accelerator> Inkling<A> {
     /// Append a mixed image/text prompt. Image placeholders must be contiguous
     /// and match `image.token_count()`. Previous turns remain in the KV cache.
     pub fn prefill_image(&mut self, tokens: &[u32], image: &Image) -> Result<Vec<f32>> {
-        let hidden = self.prefill_image_hidden(tokens, image)?;
+        let hidden = self.prefill_image_hidden(tokens, image, &mut |_| {})?;
         let result = self.logits(&hidden)?;
         self.failed = false;
         Ok(result)
     }
 
     pub fn prefill_image_greedy(&mut self, tokens: &[u32], image: &Image) -> Result<u32> {
-        let hidden = self.prefill_image_hidden(tokens, image)?;
+        self.prefill_image_greedy_with_progress(tokens, image, |_| {})
+    }
+
+    /// Append an image prompt and report loading, encoding and prefill progress.
+    pub fn prefill_image_greedy_with_progress(
+        &mut self,
+        tokens: &[u32],
+        image: &Image,
+        mut progress: impl FnMut(PrefillProgress),
+    ) -> Result<u32> {
+        let hidden = self.prefill_image_hidden(tokens, image, &mut progress)?;
         let result = self.select(&hidden)?;
         self.failed = false;
+        progress(PrefillProgress::Complete);
+        Ok(result)
+    }
+
+    /// Append a text prompt and report completed prefill chunks.
+    pub fn prefill_greedy_with_progress(
+        &mut self,
+        tokens: &[u32],
+        mut progress: impl FnMut(PrefillProgress),
+    ) -> Result<u32> {
+        let hidden = self.prefill_hidden(tokens, &mut progress)?;
+        let result = self.select(&hidden)?;
+        self.failed = false;
+        progress(PrefillProgress::Complete);
         Ok(result)
     }
 }
@@ -1304,16 +1363,13 @@ impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
         Ok(result)
     }
     fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
-        let hidden = self.prefill_hidden(tokens)?;
+        let hidden = self.prefill_hidden(tokens, &mut |_| {})?;
         let result = self.logits(&hidden)?;
         self.failed = false;
         Ok(result)
     }
     fn prefill_greedy(&mut self, tokens: &[u32]) -> Result<u32> {
-        let hidden = self.prefill_hidden(tokens)?;
-        let result = self.select(&hidden)?;
-        self.failed = false;
-        Ok(result)
+        self.prefill_greedy_with_progress(tokens, |_| {})
     }
 }
 

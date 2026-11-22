@@ -70,3 +70,38 @@ reply budget and effort 0.1. It read `RINK 5731` from a JPEG and identified a re
 square and blue circle. A text-only follow-up recalled `5731`. A second PNG image,
 reset, attachment clearing and a missing-file error also worked. No image was
 sent to an external service.
+
+## Image processing times
+
+Chat and `generate` now report image encoder loading, image encoding, prompt
+prefill, and generation separately. Encoding updates follow completed vision
+layers. Prefill updates follow completed 32-token chunks; the final count includes
+the output projection and sampling. These use the existing GPU synchronization
+points, with no kernel profiling or extra GPU waits. Status goes to stderr and
+updates at most once per second, except when a stage starts or finishes.
+
+On November 22, 2026, one local 5,344 × 3,044 PNG was measured on the same M4 Max.
+It produced 10,318 image tokens and 10,342 prompt tokens with the question
+`Describe this image briefly.` The image is not included in the repository.
+The command was `target/release/rink chat --max-tokens 64`, using the default
+262,144-token context, FP16 KV caches, and effort 0.9.
+
+| Stage | Wall time | Throughput |
+| --- | ---: | ---: |
+| Image encoder load | 1.28 s | — |
+| Image encoding | 172.61 s | — |
+| Prompt prefill, 10,342 tokens | 88.49 s | 116.9 tokens/s |
+| Generation, 64 tokens | 1.89 s | 33.9 tokens/s |
+
+This is a single run with first-use allocations included. Model startup and PNG
+file decoding are excluded from the table. Image encoding includes preprocessing,
+workspace allocation, all vision layers, and the projector. The encoder stays
+loaded for later images. Generation stopped at the 64-token reply limit while
+the model was still thinking, so this does not measure time to a complete answer.
+
+The stages before generation took 262.38 seconds in total. Image encoding accounts
+for about 66% of that time, making it the largest measured cost for this image.
+This change adds measurement and display; batch sizes, kernels, and precision
+are unchanged. Progress tests compare token results, continuation logits, GPU
+dispatches, encoders, command buffers, and readback bytes with reporting enabled
+and disabled, for both KV-cache precisions.

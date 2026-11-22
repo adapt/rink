@@ -56,6 +56,7 @@ impl<M: AutoregressiveModel> Session<M> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn start(&mut self, tokens: &[u32], max_tokens: usize) -> Result<()> {
         self.start_with(tokens, max_tokens, |model, tokens| {
             model.prefill_greedy(tokens)

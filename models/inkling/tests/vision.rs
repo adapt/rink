@@ -136,7 +136,7 @@ mod gpu {
     use super::*;
     use rink_core::{Accelerator, AutoregressiveModel};
     use rink_inkling::{
-        Config, Inkling, KvCachePrecision,
+        Config, Inkling, KvCachePrecision, PrefillProgress,
         checkpoint::Checkpoint,
         kernels::{Kernels, Params},
         vision::VisionEncoder,
@@ -239,6 +239,156 @@ mod gpu {
                     .unwrap(),
                 expected
             );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a Metal GPU"]
+    fn progress_preserves_results_and_gpu_work() {
+        use PrefillProgress::*;
+        let work = |model: &Inkling<Metal>| {
+            let s = model.accelerator().stats();
+            (
+                s.dispatches,
+                s.encoders,
+                s.command_buffers,
+                s.readback_bytes,
+            )
+        };
+        for precision in [KvCachePrecision::F16, KvCachePrecision::F32] {
+            let reference: TextReference = serde_json::from_slice(
+                &std::fs::read(fixture().join(format!("text-{precision}.json"))).unwrap(),
+            )
+            .unwrap();
+            let image = Image::open(fixture().join("input.png")).unwrap();
+            let mut model =
+                Inkling::load_with_kv_cache(Metal::new().unwrap(), fixture(), 128, precision)
+                    .unwrap();
+            let mut events = Vec::new();
+            // Rejected input must not report started or completed work.
+            assert!(
+                model
+                    .prefill_greedy_with_progress(&[], |e| events.push(e))
+                    .is_err()
+            );
+            assert!(
+                model
+                    .prefill_image_greedy_with_progress(&[1], &image, |e| events.push(e))
+                    .is_err()
+            );
+            assert!(events.is_empty());
+            assert_eq!(model.position(), 0);
+
+            model.accelerator_mut().reset_stats();
+            let first = model
+                .prefill_image_greedy_with_progress(&reference.tokens, &image, |e| events.push(e))
+                .unwrap();
+            let observed_work = work(&model);
+            assert_eq!(first, rink_core::greedy(&reference.prefill).unwrap());
+            let total_tokens = reference.tokens.len();
+            assert_eq!(
+                events,
+                [
+                    LoadingImageEncoder,
+                    ImageEncoderLoaded,
+                    ImageEncoding {
+                        completed_layers: 0,
+                        total_layers: 2
+                    },
+                    ImageEncoding {
+                        completed_layers: 1,
+                        total_layers: 2
+                    },
+                    ImageEncoding {
+                        completed_layers: 2,
+                        total_layers: 2
+                    },
+                    ImageEncoded,
+                    Prompt {
+                        completed_tokens: 0,
+                        total_tokens
+                    },
+                    Prompt {
+                        completed_tokens: 32,
+                        total_tokens
+                    },
+                    Complete,
+                ]
+            );
+            let observed_logits = model.step(4).unwrap();
+            model.reset().unwrap();
+            model.accelerator_mut().reset_stats();
+            assert_eq!(
+                model
+                    .prefill_image_greedy(&reference.tokens, &image)
+                    .unwrap(),
+                first
+            );
+            assert_eq!(work(&model), observed_work);
+            assert_eq!(model.step(4).unwrap(), observed_logits);
+
+            // Reusing the encoder skips loading. A short prompt completes only
+            // after selection; it has no intermediate synchronized chunk.
+            events.clear();
+            model.reset().unwrap();
+            model
+                .prefill_image_greedy_with_progress(&reference.turn2, &image, |e| events.push(e))
+                .unwrap();
+            assert!(matches!(
+                events[0],
+                ImageEncoding {
+                    completed_layers: 0,
+                    ..
+                }
+            ));
+            let prompt_events: Vec<_> = events
+                .iter()
+                .copied()
+                .filter(|e| matches!(e, Prompt { .. } | Complete))
+                .collect();
+            assert_eq!(
+                prompt_events,
+                [
+                    Prompt {
+                        completed_tokens: 0,
+                        total_tokens: reference.turn2.len()
+                    },
+                    Complete
+                ]
+            );
+
+            let tokens = vec![1; 65];
+            events.clear();
+            model.reset().unwrap();
+            model.accelerator_mut().reset_stats();
+            let first = model
+                .prefill_greedy_with_progress(&tokens, |e| events.push(e))
+                .unwrap();
+            let observed_work = work(&model);
+            assert_eq!(
+                events,
+                [
+                    Prompt {
+                        completed_tokens: 0,
+                        total_tokens: 65
+                    },
+                    Prompt {
+                        completed_tokens: 32,
+                        total_tokens: 65
+                    },
+                    Prompt {
+                        completed_tokens: 64,
+                        total_tokens: 65
+                    },
+                    Complete,
+                ]
+            );
+            let observed_logits = model.step(4).unwrap();
+            model.reset().unwrap();
+            model.accelerator_mut().reset_stats();
+            assert_eq!(model.prefill_greedy(&tokens).unwrap(), first);
+            assert_eq!(work(&model), observed_work);
+            assert_eq!(model.step(4).unwrap(), observed_logits);
         }
     }
 

@@ -59,6 +59,9 @@ The KV cache uses FP16. Conversation history stays in memory until reset or exit
 To ask about a picture, enter `/image /path/to/picture.png`, then enter your question.
 Each message can have one image. Images must use 8-bit channels and can be up to 16,384 pixels on each side.
 rink keeps the original image size. Large images use more memory and take longer to process.
+Chat shows progress and separate times for image encoder loading, image encoding,
+prompt prefill, and generation. It also shows when the model is thinking.
+Progress goes to stderr. Use `--show-thinking` to read the reasoning text.
 
 Use `cargo run --release -- chat --help` to see all options.
 

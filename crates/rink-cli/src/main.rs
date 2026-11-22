@@ -7,6 +7,8 @@ use std::path::PathBuf;
 mod bench;
 #[cfg(target_os = "macos")]
 mod chat;
+#[cfg(target_os = "macos")]
+mod progress;
 #[cfg(any(target_os = "macos", test))]
 mod session;
 
@@ -276,23 +278,20 @@ fn generate(
     );
     let mut model =
         rink_inkling::Inkling::load_with_kv_cache(device, &directory, context, kv_cache)?;
-    eprintln!("Prefilling {} tokens", tokens.len());
-    let start = Instant::now();
+    let mut prefill = progress::PrefillDisplay::new();
     let mut next = if let Some(image) = &image {
-        model.prefill_image_greedy(tokens, image)
+        model.prefill_image_greedy_with_progress(tokens, image, |event| prefill.observe(event))
     } else {
-        model.prefill_greedy(tokens)
+        model.prefill_greedy_with_progress(tokens, |event| prefill.observe(event))
     }
     .context("prefilling prompt")?;
-    eprintln!(
-        "Prefill: {:.2}s; generating greedily",
-        start.elapsed().as_secs_f64()
-    );
+    eprintln!("Generating…");
     let start = Instant::now();
     // Keep protocol tokens visible so thinking and final-answer boundaries are explicit.
     let mut stream = tokenizer.decode_stream(false);
     let mut output = std::io::stdout().lock();
     let mut generated = 0;
+    let mut decoded = 0;
     for i in 0..max_tokens {
         if next == model.config().eos_token_id {
             break;
@@ -307,12 +306,14 @@ fn generate(
         generated += 1;
         if i + 1 < max_tokens {
             next = model.step_greedy(next)?;
+            decoded += 1;
         }
     }
     writeln!(output)?;
+    let seconds = start.elapsed().as_secs_f64();
     eprintln!(
-        "Generated {generated} tokens in {:.2}s",
-        start.elapsed().as_secs_f64()
+        "Generation: {generated} tokens in {seconds:.2}s ({:.1} decode tok/s)",
+        progress::rate(decoded, seconds)
     );
     Ok(())
 }

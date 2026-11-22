@@ -4,10 +4,12 @@ pub mod config;
 pub mod image;
 pub mod kernels;
 pub mod model;
+mod progress;
 pub mod vision;
 pub use config::Config;
 pub use image::Image;
 pub use model::{Inkling, KvCachePrecision};
+pub use progress::PrefillProgress;
 
 /// Single user-turn subset of the released chat template (no generation suffix).
 pub fn chat_prompt(prompt: &str, effort: f32) -> rink_core::Result<String> {

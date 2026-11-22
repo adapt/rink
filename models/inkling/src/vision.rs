@@ -102,6 +102,18 @@ impl<A: Accelerator> VisionEncoder<A> {
     /// Return one decoder embedding per 40x40 image tile, in row-major order.
     /// This does not alter the text decoder or its KV caches.
     pub fn encode(&self, device: &mut A, kernels: &Kernels<A>, image: &Image) -> Result<A::Buffer> {
+        self.encode_with_progress(device, kernels, image, |_, _| {})
+    }
+
+    /// Report completed layers after their existing GPU synchronization.
+    /// The final projector runs after the last layer update.
+    pub fn encode_with_progress(
+        &self,
+        device: &mut A,
+        kernels: &Kernels<A>,
+        image: &Image,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Result<A::Buffer> {
         let c = &self.config;
         let h = c.hidden_size;
         let m = c.intermediate_size();
@@ -115,6 +127,7 @@ impl<A: Accelerator> VisionEncoder<A> {
             seq.checked_mul(m).is_some_and(|n| n <= u32::MAX as usize),
             "image is too large for this vision encoder's 32-bit indexing"
         );
+        progress(0, c.num_hidden_layers);
         let alloc = |device: &mut A, count: usize| device.allocate(count * 4);
         // A bounded set of workspaces, reused for all layers. Attention does not
         // allocate a quadratic score matrix.
@@ -246,6 +259,7 @@ impl<A: Accelerator> VisionEncoder<A> {
                 seq,
             )?;
             run.device.synchronize()?;
+            progress(i + 1, c.num_hidden_layers);
         }
         let merged = alloc(run.device, tokens * c.projection_hidden_dim)?;
         let features = alloc(run.device, tokens * c.text_hidden_size)?;

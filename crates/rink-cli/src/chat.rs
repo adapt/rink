@@ -1,4 +1,7 @@
-use crate::session::Session;
+use crate::{
+    progress::{PrefillDisplay, StatusLine, rate},
+    session::Session,
+};
 use anyhow::{Context, Result};
 use rink_core::Accelerator;
 use std::{
@@ -182,13 +185,17 @@ pub fn run(
                     writeln!(output, "{error}")?;
                     continue;
                 }
-                eprintln!("Processing {} new tokens…", encoded.len());
+                let mut prefill = PrefillDisplay::new();
                 if let Some(image) = &pending_image {
                     session.start_with(encoded.get_ids(), max_tokens, |model, tokens| {
-                        model.prefill_image_greedy(tokens, image)
+                        model.prefill_image_greedy_with_progress(tokens, image, |event| {
+                            prefill.observe(event);
+                        })
                     })?;
                 } else {
-                    session.start(encoded.get_ids(), max_tokens)?;
+                    session.start_with(encoded.get_ids(), max_tokens, |model, tokens| {
+                        model.prefill_greedy_with_progress(tokens, |event| prefill.observe(event))
+                    })?;
                 }
                 pending_image = None;
                 stream = tokenizer.decode_stream(true);
@@ -201,6 +208,8 @@ pub fn run(
         let mut label = channel.label(show_thinking);
         let start = Instant::now();
         let before = session.position();
+        let mut status = StatusLine::new();
+        status.update("Generating…", true);
         for _ in 0..session.reply_budget(max_tokens)? {
             let Some(token) = session.next_token()? else {
                 break;
@@ -218,11 +227,15 @@ pub fn run(
                 channel = next_channel;
                 label = channel.label(show_thinking);
                 stream = tokenizer.decode_stream(true);
+                if matches!(channel, Channel::Thinking) && !show_thinking {
+                    status.update("Thinking…", true);
+                }
             } else if channel.label(show_thinking).is_some() {
                 if let Some(text) = stream
                     .step(token)
                     .map_err(|e| anyhow::anyhow!("decoding token: {e}"))?
                 {
+                    status.clear();
                     if let Some(label) = label.take() {
                         write!(output, "\n{label}: ")?;
                     }
@@ -230,7 +243,18 @@ pub fn run(
                     output.flush()?;
                 }
             }
+            if matches!(channel, Channel::Thinking) && !show_thinking {
+                status.update(
+                    &format!(
+                        "Thinking… {} tokens generated; {:.1}s",
+                        session.position() - before,
+                        start.elapsed().as_secs_f64()
+                    ),
+                    false,
+                );
+            }
         }
+        status.clear();
         writeln!(output)?;
         if session.pending() {
             if session.position() == context {
@@ -246,10 +270,11 @@ pub fn run(
             }
         }
         output.flush()?;
+        let generated = session.position() - before;
+        let seconds = start.elapsed().as_secs_f64();
         eprintln!(
-            "{} tokens in {:.2}s; context {}/{context}",
-            session.position() - before,
-            start.elapsed().as_secs_f64(),
+            "Generation: {generated} tokens in {seconds:.2}s ({:.1} tok/s); context {}/{context}",
+            rate(generated, seconds),
             session.position()
         );
     }
