@@ -79,8 +79,22 @@ impl Image {
     /// Native 20x20 RGB patches, grouped in 2x2 blocks in image-token order.
     /// The reference fuses rescale/normalize into (pixel - 127.5) / 127.5.
     pub fn patches(&self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(self.token_count() * 4800);
+        self.for_each_patch_value(|value| out.push(value));
+        out
+    }
+
+    pub(crate) fn write_patches(&self, output: &mut [std::mem::MaybeUninit<f32>]) {
+        assert_eq!(output.len(), self.token_count() * 4800);
+        let mut index = 0;
+        self.for_each_patch_value(|value| {
+            output[index].write(value);
+            index += 1;
+        });
+    }
+
+    fn for_each_patch_value(&self, mut emit: impl FnMut(f32)) {
         let (rows, cols) = self.grid();
-        let mut out = Vec::with_capacity(rows * cols * 40 * 40 * 3);
         for ty in 0..rows {
             for tx in 0..cols {
                 for sy in 0..2 {
@@ -102,7 +116,7 @@ impl Image {
                                     } else {
                                         -1.
                                     };
-                                    out.push((pixel - 127.5) / 127.5);
+                                    emit((pixel - 127.5) / 127.5);
                                 }
                             }
                         }
@@ -110,7 +124,6 @@ impl Image {
                 }
             }
         }
-        out
     }
 }
 

@@ -25,11 +25,25 @@ pub struct MetalStats {
 #[derive(Clone)]
 pub struct MetalBuffer {
     raw: metal::Buffer,
+    offset: usize,
+    bytes: usize,
     owner: Arc<()>,
 }
 impl Buffer for MetalBuffer {
     fn byte_len(&self) -> usize {
-        self.raw.length() as usize
+        self.bytes
+    }
+    fn view(&self, offset: usize, bytes: usize) -> Result<Self> {
+        ensure!(
+            offset % 256 == 0 && bytes > 0 && offset <= self.bytes && bytes <= self.bytes - offset,
+            "invalid buffer view"
+        );
+        Ok(Self {
+            raw: self.raw.clone(),
+            owner: self.owner.clone(),
+            offset: self.offset + offset,
+            bytes,
+        })
     }
 }
 
@@ -112,7 +126,7 @@ impl Metal {
         self.kernel_profile.as_ref().map(|profile| &profile.stats)
     }
 
-    fn new_buffer(&mut self, bytes: usize, data: Option<&[u8]>) -> Result<MetalBuffer> {
+    fn new_buffer(&mut self, bytes: usize, data: Option<&[u8]>, zero: bool) -> Result<MetalBuffer> {
         let start = self.profiling.then(Instant::now);
         ensure!(
             bytes > 0 && bytes <= self.device.max_buffer_length() as usize,
@@ -137,12 +151,12 @@ impl Metal {
         ensure!(!ptr.is_null(), "Metal could not allocate {bytes} bytes");
         // SAFETY: newBuffer returned a non-null owned (+1) MTLBuffer.
         let raw = unsafe { metal::Buffer::from_ptr(ptr) };
-        // SAFETY: new shared buffer with no GPU accesses. Initialize exactly once;
-        // uploads overwrite the whole allocation and need no preceding zero fill.
+        // SAFETY: new shared buffer with no GPU accesses. Uploads initialize the
+        // allocation directly; overwrite-only callers initialize it before use.
         unsafe {
             if let Some(data) = data {
                 std::ptr::copy_nonoverlapping(data.as_ptr(), raw.contents().cast(), bytes);
-            } else {
+            } else if zero {
                 std::ptr::write_bytes(raw.contents().cast::<u8>(), 0, bytes);
             }
         }
@@ -155,6 +169,8 @@ impl Metal {
         }
         Ok(MetalBuffer {
             raw,
+            offset: 0,
+            bytes,
             owner: self.owner.clone(),
         })
     }
@@ -173,10 +189,10 @@ unsafe impl Accelerator for Metal {
         &self.name
     }
     fn allocate(&mut self, bytes: usize) -> Result<MetalBuffer> {
-        self.new_buffer(bytes, None)
+        self.new_buffer(bytes, None, true)
     }
     fn upload(&mut self, bytes: &[u8]) -> Result<MetalBuffer> {
-        self.new_buffer(bytes.len(), Some(bytes))
+        self.new_buffer(bytes.len(), Some(bytes), false)
     }
     fn compile(&mut self, source: &KernelSource<'_>, entry: &str) -> Result<MetalKernel> {
         objc::rc::autoreleasepool(|| {
@@ -277,7 +293,9 @@ unsafe impl Accelerator for Metal {
             encoder.set_compute_pipeline_state(&kernel.pipeline);
             for (i, arg) in args.iter().enumerate() {
                 match arg {
-                    Argument::Buffer(b) => encoder.set_buffer(i as u64, Some(&b.raw), 0),
+                    Argument::Buffer(b) => {
+                        encoder.set_buffer(i as u64, Some(&b.raw), b.offset as u64)
+                    }
                     Argument::Bytes(b) => {
                         encoder.set_bytes(i as u64, b.len() as u64, b.as_ptr().cast())
                     }
@@ -339,13 +357,83 @@ unsafe impl Accelerator for Metal {
             Arc::ptr_eq(&buffer.owner, &self.owner),
             "buffer belongs to a different device stream"
         );
+        let mut output = vec![0; bytes];
+        self.read_into(buffer, &mut output)?;
+        Ok(output)
+    }
+    fn read_into(&mut self, buffer: &MetalBuffer, output: &mut [u8]) -> Result<()> {
+        ensure!(
+            output.len() <= buffer.byte_len(),
+            "read exceeds buffer size"
+        );
+        ensure!(
+            Arc::ptr_eq(&buffer.owner, &self.owner),
+            "buffer belongs to a different device stream"
+        );
         self.synchronize()?;
-        self.stats.readback_bytes += bytes as u64;
-        // SAFETY: shared storage; all work is complete, and the slice fits the buffer.
-        Ok(
-            unsafe { std::slice::from_raw_parts(buffer.raw.contents().cast::<u8>(), bytes) }
-                .to_vec(),
-        )
+        self.stats.readback_bytes += output.len() as u64;
+        // SAFETY: bounded initialized storage, with all GPU work complete.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                buffer.raw.contents().cast::<u8>().add(buffer.offset),
+                output.as_mut_ptr(),
+                output.len(),
+            );
+        }
+        Ok(())
+    }
+    unsafe fn allocate_uninitialized(&mut self, bytes: usize) -> Result<MetalBuffer> {
+        self.new_buffer(bytes, None, false)
+    }
+    fn write(&mut self, buffer: &MetalBuffer, offset: usize, data: &[u8]) -> Result<()> {
+        ensure!(
+            offset <= buffer.byte_len() && data.len() <= buffer.byte_len() - offset,
+            "write exceeds buffer size"
+        );
+        ensure!(
+            Arc::ptr_eq(&buffer.owner, &self.owner),
+            "buffer belongs to a different device stream"
+        );
+        self.synchronize()?;
+        // SAFETY: bounded shared storage; no pending GPU reader or writer.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                buffer
+                    .raw
+                    .contents()
+                    .cast::<u8>()
+                    .add(buffer.offset + offset),
+                data.len(),
+            );
+        }
+        Ok(())
+    }
+    unsafe fn initialize_f32(
+        &mut self,
+        buffer: &MetalBuffer,
+        count: usize,
+        fill: impl FnOnce(&mut [std::mem::MaybeUninit<f32>]),
+    ) -> Result<()> {
+        ensure!(
+            count <= buffer.byte_len() / 4,
+            "initialization exceeds buffer size"
+        );
+        ensure!(
+            Arc::ptr_eq(&buffer.owner, &self.owner),
+            "buffer belongs to a different device stream"
+        );
+        self.synchronize()?;
+        // SAFETY: 256-byte-aligned view of shared storage, no GPU work pending.
+        // MaybeUninit permits writing without reading or zeroing the old bytes.
+        let values = unsafe {
+            std::slice::from_raw_parts_mut(
+                buffer.raw.contents().cast::<u8>().add(buffer.offset).cast(),
+                count,
+            )
+        };
+        fill(values);
+        Ok(())
     }
 }
 impl Drop for Metal {

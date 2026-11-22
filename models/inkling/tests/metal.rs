@@ -1805,8 +1805,8 @@ fn large_context_shares_attention_workspace_and_reuses_it_after_reset() {
         );
         assert_eq!(
             model.accelerator().stats().allocations,
-            allocations + 2,
-            "only the two new prompt-token uploads should allocate"
+            allocations,
+            "prompt-token storage and workspaces should be reused"
         );
         measurements.push((loaded, scratch));
     }

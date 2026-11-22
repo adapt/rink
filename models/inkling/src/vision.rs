@@ -6,8 +6,9 @@ use crate::{
     image::Image,
     kernels::{Kernels, Params},
 };
+use crate::{name::name, workspace::Pool};
 use anyhow::{Result, ensure};
-use rink_core::Accelerator;
+use rink_core::{Accelerator, Buffer};
 use safetensors::Dtype;
 use std::collections::HashMap;
 
@@ -112,8 +113,20 @@ impl<A: Accelerator> VisionEncoder<A> {
         device: &mut A,
         kernels: &Kernels<A>,
         image: &Image,
-        mut progress: impl FnMut(usize, usize),
+        progress: impl FnMut(usize, usize),
     ) -> Result<A::Buffer> {
+        self.encode_with_pool(device, kernels, image, &mut Pool::new(), progress)
+            .map(|(features, _storage)| features)
+    }
+
+    pub(crate) fn encode_with_pool(
+        &self,
+        device: &mut A,
+        kernels: &Kernels<A>,
+        image: &Image,
+        pool: &mut Pool<A::Buffer>,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Result<(A::Buffer, A::Buffer)> {
         let c = &self.config;
         let h = c.hidden_size;
         let m = c.intermediate_size();
@@ -128,23 +141,33 @@ impl<A: Accelerator> VisionEncoder<A> {
             "image is too large for this vision encoder's 32-bit indexing"
         );
         progress(0, c.num_hidden_layers);
-        let alloc = |device: &mut A, count: usize| device.allocate(count * 4);
+        // Keep simultaneously live vision tensors in distinct Metal resources.
+        // This preserves the resource boundaries between independent projections.
+        // Whole blocks still return to the text pool when their lifetimes end.
+        let alloc =
+            |device: &mut A, pool: &mut Pool<A::Buffer>, count: usize| pool.take(device, count * 4);
         // A bounded set of workspaces, reused for all layers. Attention does not
         // allocate a quadratic score matrix.
-        let a = alloc(device, seq * h)?;
-        let b = alloc(device, seq * h)?;
-        let norm = alloc(device, seq * h)?;
-        let q = alloc(device, seq * h)?;
-        let k = alloc(device, seq * h)?;
-        let v = alloc(device, seq * h)?;
+        let a = alloc(device, pool, seq * h)?;
+        let b = pool.take(device, seq * h * 4)?;
+        let norm = alloc(device, pool, seq * h)?;
+        let q = alloc(device, pool, seq * h)?;
+        let k = alloc(device, pool, seq * h)?;
+        let v = alloc(device, pool, seq * h)?;
         // The attention result is consumed before a becomes the residual.
         // Normalized inputs are consumed before each projection writes its
         // result. Ordered dispatch lets these nonoverlapping lifetimes share
         // storage, saving two seq*h buffers without changing any operation.
         let attn = a.clone();
         let projected = norm.clone();
-        let up = alloc(device, seq * m)?;
-        let pixels = device.upload(bytemuck::cast_slice(&image.patches()))?;
+        let up = alloc(device, pool, seq * m)?;
+        let pixels = alloc(device, pool, image.token_count() * 4800)?;
+        // SAFETY: write_patches initializes exactly every float in the patch tensor.
+        unsafe {
+            device.initialize_f32(&pixels, image.token_count() * 4800, |values| {
+                image.write_patches(values)
+            })?;
+        }
         let mut run = Runner {
             device,
             kernels,
@@ -159,8 +182,9 @@ impl<A: Accelerator> VisionEncoder<A> {
             patches,
             0,
         )?;
-        // Pending commands retain this upload until its projection completes.
-        drop(pixels);
+        // The last pixel read is encoded. No block is borrowed again until the
+        // encoder layers have synchronized; pending commands retain the buffer.
+        pool.put(pixels);
         let pos = &self.weights["backbone.embeddings.position_embedding"];
         run.dispatch(
             "vision_positions",
@@ -179,33 +203,27 @@ impl<A: Accelerator> VisionEncoder<A> {
         run.norm(&b, &a, "backbone.ln_pre", h, seq, c.layer_norm_eps)?;
         // b is the live residual stream at both the start and end of each layer.
         for i in 0..c.num_hidden_layers {
-            let p = format!("backbone.layers.{i}");
-            run.norm(&norm, &b, &format!("{p}.ln_1"), h, seq, c.layer_norm_eps)?;
+            let p = name!("backbone.layers.{i}");
+            run.norm(&norm, &b, &name!("{p}.ln_1"), h, seq, c.layer_norm_eps)?;
             for (dst, name) in [(&q, "q_proj"), (&k, "k_proj"), (&v, "v_proj")] {
                 run.linear(
                     dst,
                     &norm,
-                    &format!("{p}.self_attn.{name}.weight"),
+                    &name!("{p}.self_attn.{name}.weight"),
                     h,
                     h,
                     seq,
                     0,
                 )?;
             }
-            run.bias(
-                &v,
-                Some(&format!("{p}.self_attn.v_proj.bias")),
-                h,
-                seq,
-                false,
-            )?;
+            run.bias(&v, Some(&name!("{p}.self_attn.v_proj.bias")), h, seq, false)?;
             run.dispatch(
                 "vision_rope",
                 &[
                     &q,
                     &k,
-                    run.weight(&format!("{p}.self_attn.q_proj.bias")),
-                    run.weight(&format!("{p}.self_attn.k_proj.bias")),
+                    run.weight(&name!("{p}.self_attn.q_proj.bias")),
+                    run.weight(&name!("{p}.self_attn.k_proj.bias")),
                 ],
                 &[
                     seq,
@@ -238,7 +256,7 @@ impl<A: Accelerator> VisionEncoder<A> {
             run.linear(
                 &projected,
                 &attn,
-                &format!("{p}.self_attn.out_proj.weight"),
+                &name!("{p}.self_attn.out_proj.weight"),
                 h,
                 h,
                 seq,
@@ -248,18 +266,18 @@ impl<A: Accelerator> VisionEncoder<A> {
                 &a,
                 &b,
                 &projected,
-                &format!("{p}.self_attn.out_proj.bias"),
-                &format!("{p}.ls_1.gamma"),
+                &name!("{p}.self_attn.out_proj.bias"),
+                &name!("{p}.ls_1.gamma"),
                 h,
                 seq,
             )?;
-            run.norm(&norm, &a, &format!("{p}.ln_2"), h, seq, c.layer_norm_eps)?;
-            run.linear(&up, &norm, &format!("{p}.mlp.c_fc.weight"), m, h, seq, 0)?;
-            run.bias(&up, Some(&format!("{p}.mlp.c_fc.bias")), m, seq, true)?;
+            run.norm(&norm, &a, &name!("{p}.ln_2"), h, seq, c.layer_norm_eps)?;
+            run.linear(&up, &norm, &name!("{p}.mlp.c_fc.weight"), m, h, seq, 0)?;
+            run.bias(&up, Some(&name!("{p}.mlp.c_fc.bias")), m, seq, true)?;
             run.linear(
                 &projected,
                 &up,
-                &format!("{p}.mlp.c_proj.weight"),
+                &name!("{p}.mlp.c_proj.weight"),
                 h,
                 m,
                 seq,
@@ -269,8 +287,8 @@ impl<A: Accelerator> VisionEncoder<A> {
                 &b,
                 &a,
                 &projected,
-                &format!("{p}.mlp.c_proj.bias"),
-                &format!("{p}.ls_2.gamma"),
+                &name!("{p}.mlp.c_proj.bias"),
+                &name!("{p}.ls_2.gamma"),
                 h,
                 seq,
             )?;
@@ -279,9 +297,13 @@ impl<A: Accelerator> VisionEncoder<A> {
         }
         // Only the residual stream feeds the projector. The last layer has
         // synchronized, so its other workspaces can be released now.
-        drop((a, norm, q, k, v, attn, projected, up));
-        let merged = alloc(run.device, tokens * c.projection_hidden_dim)?;
-        let features = alloc(run.device, tokens * c.text_hidden_size)?;
+        drop((attn, projected));
+        for buffer in [a, norm, q, k, v, up] {
+            pool.put(buffer);
+        }
+        let merged = alloc(run.device, pool, tokens * c.projection_hidden_dim)?;
+        let storage = pool.take(run.device, tokens * c.text_hidden_size * 4)?;
+        let features = storage.view(0, tokens * c.text_hidden_size * 4)?;
         // Skip CLS; the four native patches in a tile are already contiguous.
         run.linear(
             &merged,
@@ -303,7 +325,9 @@ impl<A: Accelerator> VisionEncoder<A> {
             0,
         )?;
         run.device.synchronize()?;
-        Ok(features)
+        pool.put(merged);
+        pool.put(b);
+        Ok((features, storage))
     }
 }
 
@@ -374,8 +398,8 @@ impl<'a, A: Accelerator> Runner<'a, A> {
             &[
                 out,
                 x,
-                self.weight(&format!("{name}.weight")),
-                self.weight(&format!("{name}.bias")),
+                self.weight(&name!("{name}.weight")),
+                self.weight(&name!("{name}.bias")),
             ],
             &[width, rows],
             &[eps],

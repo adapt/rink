@@ -22,10 +22,17 @@ impl Drop for Allocation {
     }
 }
 #[derive(Clone)]
-struct SizedBuffer(Rc<Allocation>);
+struct SizedBuffer(Rc<Allocation>, usize);
 impl Buffer for SizedBuffer {
     fn byte_len(&self) -> usize {
-        self.0.bytes
+        self.1
+    }
+    fn view(&self, offset: usize, bytes: usize) -> Result<Self> {
+        ensure!(
+            offset % 256 == 0 && offset <= self.1 && bytes > 0 && bytes <= self.1 - offset,
+            "invalid view"
+        );
+        Ok(Self(self.0.clone(), bytes))
     }
 }
 #[derive(Default)]
@@ -48,13 +55,23 @@ unsafe impl Accelerator for Allocator {
         let mut s = self.stats.borrow_mut();
         s.live += bytes;
         s.peak = s.peak.max(s.live);
-        Ok(SizedBuffer(Rc::new(Allocation {
+        Ok(SizedBuffer(
+            Rc::new(Allocation {
+                bytes,
+                stats: self.stats.clone(),
+            }),
             bytes,
-            stats: self.stats.clone(),
-        })))
+        ))
     }
     fn upload(&mut self, bytes: &[u8]) -> Result<SizedBuffer> {
         self.allocate(bytes.len())
+    }
+    fn write(&mut self, b: &SizedBuffer, offset: usize, data: &[u8]) -> Result<()> {
+        ensure!(
+            offset <= b.byte_len() && data.len() <= b.byte_len() - offset,
+            "write exceeds buffer"
+        );
+        self.synchronize()
     }
     fn compile(&mut self, _: &KernelSource<'_>, _: &str) -> Result<Self::Kernel> {
         Ok(self.stats.clone())

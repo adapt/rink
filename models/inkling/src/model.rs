@@ -6,9 +6,14 @@ use crate::{
     kernels::{Kernels, Params},
     vision::VisionEncoder,
 };
+use crate::{
+    name::name,
+    workspace::{Arena, Pool},
+};
 use anyhow::{Context, Result, bail, ensure};
 use rink_core::{Accelerator, AutoregressiveModel, Buffer};
 use safetensors::Dtype;
+use std::sync::Arc;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -136,6 +141,8 @@ pub struct Inkling<A: Accelerator> {
     device: A,
     kernels: Kernels<A>,
     config: Config,
+    text: Arc<TextConfig>,
+    schedule: Arc<[Visit]>,
     directory: PathBuf,
     vision: Option<VisionEncoder<A>>,
     weights: HashMap<String, Weight<A::Buffer>>,
@@ -146,10 +153,10 @@ pub struct Inkling<A: Accelerator> {
     capacity: usize,
     position: usize,
     failed: bool,
-    scratch: Vec<A::Buffer>,
-    scratch_cursor: usize,
-    layer_scratch: Vec<A::Buffer>,
-    layer_scratch_cursor: usize,
+    pool: Pool<A::Buffer>,
+    scratch: Arena<A::Buffer>,
+    layer_scratch: Arena<A::Buffer>,
+    token_ids: Option<A::Buffer>,
     in_layer: bool,
     prefill_batch_limit: usize,
     batch: usize,
@@ -213,6 +220,8 @@ impl<A: Accelerator> Inkling<A> {
         let mut model = Self {
             device,
             kernels,
+            text: Arc::new(config.text_config.clone()),
+            schedule: config.text_config.schedule().into(),
             config,
             directory: directory.to_owned(),
             vision: None,
@@ -224,12 +233,12 @@ impl<A: Accelerator> Inkling<A> {
             capacity,
             position: 0,
             failed: false,
-            scratch: Vec::new(),
-            scratch_cursor: 0,
-            layer_scratch: Vec::new(),
-            layer_scratch_cursor: 0,
+            pool: Pool::new(),
+            scratch: Arena::new(),
+            layer_scratch: Arena::new(),
+            token_ids: None,
             in_layer: false,
-            // About 29 GiB of Metal allocation at 256K with FP16 KV storage.
+            // About 28 GiB of Metal allocation at 256K with FP16 KV storage.
             prefill_batch_limit: 1024,
             batch: 1,
         };
@@ -267,23 +276,26 @@ impl<A: Accelerator> Inkling<A> {
 
     fn alloc(&mut self, n: usize) -> Result<A::Buffer> {
         let bytes = n.checked_mul(4).context("buffer size overflow")?;
-        let (scratch, cursor) = if self.in_layer {
-            (&mut self.layer_scratch, &mut self.layer_scratch_cursor)
+        let arena = if self.in_layer {
+            &mut self.layer_scratch
         } else {
-            (&mut self.scratch, &mut self.scratch_cursor)
+            &mut self.scratch
         };
-        let index = *cursor;
-        if index == scratch.len() {
-            scratch.push(self.device.allocate(bytes)?);
-        } else if scratch[index].byte_len() < bytes {
-            scratch[index] = self.device.allocate(bytes)?;
-        }
-        *cursor += 1;
-        Ok(scratch[index].clone())
+        arena.alloc(&mut self.device, &mut self.pool, bytes)
     }
+    fn release_workspaces(&mut self) {
+        self.scratch.release(&mut self.pool);
+        self.layer_scratch.release(&mut self.pool);
+        if let Some(buffer) = self.attention_workspace.take() {
+            self.pool.put(buffer);
+        }
+    }
+
     fn alloc_state(&mut self, n: usize) -> Result<A::Buffer> {
-        self.device
-            .allocate(n.checked_mul(4).context("buffer size overflow")?)
+        let bytes = n.checked_mul(4).context("buffer size overflow")?;
+        // SAFETY: convolution writes the current ring slot before reading it,
+        // and reads only lags <= the absolute position (also after reset).
+        unsafe { self.device.allocate_uninitialized(bytes) }
     }
 
     fn attention_workspace(&mut self, n: usize) -> Result<A::Buffer> {
@@ -295,7 +307,10 @@ impl<A: Accelerator> Inkling<A> {
             .as_ref()
             .is_none_or(|b| b.byte_len() < bytes)
         {
-            self.attention_workspace = Some(self.device.allocate(bytes)?);
+            if let Some(buffer) = self.attention_workspace.take() {
+                self.pool.put(buffer);
+            }
+            self.attention_workspace = Some(self.pool.take(&mut self.device, bytes)?);
         }
         // Every partition buffer is consumed by attention_finish before the next
         // query group or layer overwrites it. The ordered stream preserves this
@@ -460,9 +475,9 @@ impl<A: Accelerator> Inkling<A> {
             self.batch * group,
             group,
         )?;
-        let low = self.linear(&format!("{prefix}.down_weight"), &cat, rank, 2 * h)?;
-        let forget = self.weights[&format!("{prefix}.forget_weight")].clone();
-        let gain = self.weights[&format!("{prefix}.gain_weight")].clone();
+        let low = self.linear(&name!("{prefix}.down_weight"), &cat, rank, 2 * h)?;
+        let forget = self.weights[&*name!("{prefix}.forget_weight")].clone();
+        let gain = self.weights[&*name!("{prefix}.gain_weight")].clone();
         let y = self.alloc(h * self.batch)?;
         let vectorized = rank % 4 == 0 && h >= 128;
         let (kernel, threads, group) = if self.batch > 1 {
@@ -514,11 +529,11 @@ impl<A: Accelerator> Inkling<A> {
         let h = c.hidden_size;
         let (w, dyn_weights) = if let Some(input) = dynamic_input {
             (
-                self.w(&format!("{prefix}.static_w")),
-                self.linear(&format!("{prefix}.weight_proj"), input, heads * k, h)?,
+                self.w(&name!("{prefix}.static_w")),
+                self.linear(&name!("{prefix}.weight_proj"), input, heads * k, h)?,
             )
         } else {
-            (self.w(&format!("{prefix}.weight")), x.clone())
+            (self.w(&name!("{prefix}.weight")), x.clone())
         };
         let history = self.caches[visit.cache].conv[state].clone();
         let y = self.alloc(channels * self.batch)?;
@@ -611,7 +626,7 @@ impl<A: Accelerator> Inkling<A> {
             let convolved = self.conv(
                 &input,
                 None,
-                &format!("layers.{}.{kind}_sconv", visit.layer),
+                &name!("layers.{}.{kind}_sconv", visit.layer),
                 visit,
                 state,
                 h,
@@ -627,7 +642,7 @@ impl<A: Accelerator> Inkling<A> {
             }
             return Ok(convolved);
         }
-        let w = self.w(&format!("layers.{}.{kind}_sconv.weight", visit.layer));
+        let w = self.w(&name!("layers.{}.{kind}_sconv.weight", visit.layer));
         let history = self.caches[visit.cache].conv[state].clone();
         let geometry = [
             h,
@@ -659,42 +674,42 @@ impl<A: Accelerator> Inkling<A> {
         Ok(y)
     }
     fn attention(&mut self, inputs: &[A::Buffer], visit: Visit) -> Result<A::Buffer> {
-        let c = self.config.text_config.clone();
+        let c = self.text.clone();
         let (qh, kh, d) = c.attention_shape(visit.layer);
         let local = c.is_local(visit.layer);
-        let p = format!("layers.{}.attn", visit.layer);
+        let p = name!("layers.{}.attn", visit.layer);
         let q = self.linear(
-            &format!("{p}.wq_du.weight"),
+            &name!("{p}.wq_du.weight"),
             &inputs[0],
             qh * d,
             c.hidden_size,
         )?;
         let k = self.linear(
-            &format!("{p}.wk_dv.weight"),
+            &name!("{p}.wk_dv.weight"),
             &inputs[1],
             kh * d,
             c.hidden_size,
         )?;
         let v = self.linear(
-            &format!("{p}.wv_dv.weight"),
+            &name!("{p}.wv_dv.weight"),
             &inputs[2],
             kh * d,
             c.hidden_size,
         )?;
         let r = self.linear(
-            &format!("{p}.wr_du.weight"),
+            &name!("{p}.wr_du.weight"),
             &inputs[0],
             qh * c.d_rel,
             c.hidden_size,
         )?;
         let gate = self.linear(
-            &format!("{p}.gate_attn.weight"),
+            &name!("{p}.gate_attn.weight"),
             &inputs[0],
             qh * d,
             c.hidden_size,
         )?;
         let sink = self.linear(
-            &format!("{p}.attn_sink_proj.weight"),
+            &name!("{p}.attn_sink_proj.weight"),
             &inputs[0],
             qh,
             c.hidden_size,
@@ -702,7 +717,7 @@ impl<A: Accelerator> Inkling<A> {
         let k = self.conv(
             &k,
             if local { None } else { Some(&inputs[1]) },
-            &format!("{p}.k_sconv"),
+            &name!("{p}.k_sconv"),
             visit,
             0,
             kh * d,
@@ -710,14 +725,14 @@ impl<A: Accelerator> Inkling<A> {
         let v = self.conv(
             &v,
             if local { None } else { Some(&inputs[2]) },
-            &format!("{p}.v_sconv"),
+            &name!("{p}.v_sconv"),
             visit,
             1,
             kh * d,
         )?;
         let q = self.clip(
             &q,
-            Some(&format!("{p}.q_l2_clip.scale")),
+            Some(&name!("{p}.q_l2_clip.scale")),
             d,
             qh,
             c.qk_l2_clip_threshold,
@@ -727,7 +742,7 @@ impl<A: Accelerator> Inkling<A> {
         let v = self.norm(&v, None, d, kh)?;
         let r = self.clip(
             &r,
-            Some(&format!("{p}.rel_l2_clip.scale")),
+            Some(&name!("{p}.rel_l2_clip.scale")),
             c.d_rel,
             qh,
             c.rel_l2_clip_threshold,
@@ -773,7 +788,7 @@ impl<A: Accelerator> Inkling<A> {
                 })
                 * (d + 2),
         )?;
-        let profiles = self.w(&format!("{p}.rel_logits_proj.proj"));
+        let profiles = self.w(&name!("{p}.rel_logits_proj.proj"));
         // More score groups hide latency on small decode grids. Both larger
         // decode grids and prompt batches benefit from ordered value prefetch.
         // All paths retain the same dot products, softmax and partition sums.
@@ -830,7 +845,7 @@ impl<A: Accelerator> Inkling<A> {
             self.batch * kh * d,
             128,
         )?;
-        self.linear(&format!("{p}.wo_ud.weight"), &gated, c.hidden_size, qh * d)
+        self.linear(&name!("{p}.wo_ud.weight"), &gated, c.hidden_size, qh * d)
     }
     fn expert_projection(
         &mut self,
@@ -976,15 +991,15 @@ impl<A: Accelerator> Inkling<A> {
         visit: Visit,
         output: &A::Buffer,
     ) -> Result<A::Buffer> {
-        let c = self.config.text_config.clone();
+        let c = self.text.clone();
         let layer = visit.layer;
         let logits = self.linear(
-            &format!("layers.{layer}.mlp.gate.weight"),
+            &name!("layers.{layer}.mlp.gate.weight"),
             x,
             c.n_routed_experts,
             c.hidden_size,
         )?;
-        let bias = self.w(&format!("layers.{layer}.mlp.gate.bias"));
+        let bias = self.w(&name!("layers.{layer}.mlp.gate.bias"));
         let routing = self.alloc(2 * c.num_experts_per_tok * self.batch)?;
         self.run(
             "route_parallel",
@@ -1009,14 +1024,13 @@ impl<A: Accelerator> Inkling<A> {
         blocks: &mut Blocks<A::Buffer>,
         previous: Option<&(Blocks<A::Buffer>, A::Buffer)>,
         visit: Visit,
+        output: &A::Buffer,
     ) -> Result<A::Buffer> {
-        // Only this result, the residual banks and the prelude/previous-pass
-        // state survive a layer. Keep them in the outer pool; every other
-        // activation can be overwritten by the next layer's ordered commands.
-        let output = self.alloc(self.config.text_config.hidden_size * self.batch)?;
-        self.layer_scratch_cursor = 0;
+        // The caller protects the live, prelude and previous-pass output slots.
+        // All other activation lifetimes end with this layer's ordered commands.
+        self.layer_scratch.reset();
         self.in_layer = true;
-        let result = self.layer_inner(hidden, blocks, previous, visit, &output);
+        let result = self.layer_inner(hidden, blocks, previous, visit, output);
         self.in_layer = false;
         result
     }
@@ -1028,18 +1042,18 @@ impl<A: Accelerator> Inkling<A> {
         visit: Visit,
         output: &A::Buffer,
     ) -> Result<A::Buffer> {
-        let c = self.config.text_config.clone();
+        let c = self.text.clone();
         let h = c.hidden_size;
-        let prefix = format!("layers.{}", visit.layer);
+        let prefix = name!("layers.{}", visit.layer);
         let local = c.is_local(visit.layer);
-        let mut inputs: Vec<A::Buffer> = Vec::new();
+        let mut inputs: [A::Buffer; 3] = std::array::from_fn(|_| hidden.clone());
         let shared = if visit.layer == 0 {
             Some(hidden.clone())
         } else if local {
             Some(self.read_blocks(
                 blocks,
                 hidden,
-                &format!("attn_res.attn_queries.{}", visit.layer - 1),
+                &name!("attn_res.attn_queries.{}", visit.layer - 1),
                 0,
             )?)
         } else {
@@ -1047,7 +1061,7 @@ impl<A: Accelerator> Inkling<A> {
         };
         for input in 0..3 {
             if input > 0 && local && previous.is_none() {
-                inputs.push(inputs[0].clone());
+                inputs[input] = inputs[0].clone();
                 continue;
             }
             let x = if let Some(shared) = &shared {
@@ -1056,7 +1070,7 @@ impl<A: Accelerator> Inkling<A> {
                 self.read_blocks(
                     blocks,
                     hidden,
-                    &format!("attn_res.attn_queries.{}", visit.layer - 1),
+                    &name!("attn_res.attn_queries.{}", visit.layer - 1),
                     if local { 0 } else { input * h },
                 )?
             };
@@ -1075,17 +1089,17 @@ impl<A: Accelerator> Inkling<A> {
                 self.message_gate(
                     &x,
                     &msg,
-                    &format!("{prefix}.controllers.{}", ["attn", "k", "v"][input]),
+                    &name!("{prefix}.controllers.{}", ["attn", "k", "v"][input]),
                 )?
             } else {
                 x
             };
             let norm = if local {
-                format!("{prefix}.attn_norm.weight")
+                name!("{prefix}.attn_norm.weight")
             } else {
-                format!("{prefix}.{}_input_norm.weight", ["q", "k", "v"][input])
+                name!("{prefix}.{}_input_norm.weight", ["q", "k", "v"][input])
             };
-            inputs.push(self.norm(&x, Some(&norm), h, 1)?);
+            inputs[input] = self.norm(&x, Some(&norm), h, 1)?;
         }
         let attn = self.attention(&inputs, visit)?;
         let boundary = visit.layer % c.n_layers_per_attn_res_block == 0;
@@ -1109,7 +1123,7 @@ impl<A: Accelerator> Inkling<A> {
         let x = self.read_blocks(
             blocks,
             &residual,
-            &format!("attn_res.mlp_queries.{}", visit.layer),
+            &name!("attn_res.mlp_queries.{}", visit.layer),
             0,
         )?;
         let x = if let Some((previous, previous_live)) = previous {
@@ -1119,11 +1133,11 @@ impl<A: Accelerator> Inkling<A> {
                 "middle_cycle_cross_pass_queries",
                 ((visit.layer - c.loop_config.core_start) * 2 + 1) * h,
             )?;
-            self.message_gate(&x, &msg, &format!("{prefix}.controllers.mlp"))?
+            self.message_gate(&x, &msg, &name!("{prefix}.controllers.mlp"))?
         } else {
             x
         };
-        let x = self.norm(&x, Some(&format!("{prefix}.mlp_norm.weight")), h, 1)?;
+        let x = self.norm(&x, Some(&name!("{prefix}.mlp_norm.weight")), h, 1)?;
         self.moe(&x, &residual, visit, output)
     }
     fn hidden(&mut self, tokens: &[u32]) -> Result<A::Buffer> {
@@ -1134,9 +1148,9 @@ impl<A: Accelerator> Inkling<A> {
         tokens: &[u32],
         image: Option<(&A::Buffer, usize, usize, usize)>,
     ) -> Result<A::Buffer> {
-        self.scratch_cursor = 0;
+        self.scratch.reset();
         self.batch = tokens.len();
-        let c = self.config.text_config.clone();
+        let c = self.text.clone();
         let embed = self.weights["embed.weight"].clone();
         let hidden = self.alloc(c.hidden_size * self.batch)?;
         if self.batch == 1 {
@@ -1149,7 +1163,16 @@ impl<A: Accelerator> Inkling<A> {
                 128,
             )?;
         } else {
-            let ids = self.device.upload(bytemuck::cast_slice(tokens))?;
+            let bytes = std::mem::size_of_val(tokens);
+            if self.token_ids.as_ref().is_none_or(|b| b.byte_len() < bytes) {
+                // Host writes happen only after all previous reads complete.
+                self.device.synchronize()?;
+                self.token_ids = None;
+                // SAFETY: write below initializes every token the kernel reads.
+                self.token_ids = Some(unsafe { self.device.allocate_uninitialized(bytes)? });
+            }
+            let ids = self.token_ids.as_ref().unwrap().clone();
+            self.device.write(&ids, 0, bytemuck::cast_slice(tokens))?;
             self.run(
                 "embedding_batch",
                 &[&hidden, &embed.buffer, &ids],
@@ -1179,17 +1202,31 @@ impl<A: Accelerator> Inkling<A> {
             count: 0,
             offset: 0,
         };
+        // At most the current, prelude, and previous-pass values are pinned.
+        // A fourth output can always be overwritten after its last encoded read.
+        let n = c.hidden_size * self.batch;
+        let outputs = [
+            self.alloc(n)?,
+            self.alloc(n)?,
+            self.alloc(n)?,
+            self.alloc(n)?,
+        ];
+        let mut hidden_slot = None;
+        let mut prelude_slot = None;
+        let mut previous_slot = None;
         let mut prelude = None;
         let mut previous = None;
-        for visit in c.schedule() {
+        for visit in self.schedule.clone().iter().copied() {
             if visit.layer == c.loop_config.core_start {
                 if visit.pass == 0 {
+                    prelude_slot = hidden_slot;
                     prelude = Some((hidden.clone(), blocks.clone()));
                 } else {
                     let (pre_hidden, pre_blocks) = prelude.as_ref().expect("validated schedule");
                     // Exclude the prelude and the first core boundary. Only completed core
                     // blocks plus the final partial block are messages for the next pass.
                     let offset = pre_blocks.count + 1;
+                    previous_slot = hidden_slot;
                     previous = Some((
                         Blocks {
                             buffer: blocks.buffer.clone(),
@@ -1199,6 +1236,7 @@ impl<A: Accelerator> Inkling<A> {
                         hidden,
                     ));
                     hidden = pre_hidden.clone();
+                    hidden_slot = prelude_slot;
                     blocks = Blocks {
                         buffer: self.alloc(bank_size)?,
                         count: pre_blocks.count,
@@ -1215,18 +1253,23 @@ impl<A: Accelerator> Inkling<A> {
             }
             let in_core =
                 visit.layer >= c.loop_config.core_start && visit.layer < c.loop_config.core_end;
+            let slot = (0..4)
+                .find(|&slot| ![hidden_slot, prelude_slot, previous_slot].contains(&Some(slot)))
+                .unwrap();
             hidden = self.layer(
                 &hidden,
                 &mut blocks,
                 if in_core { previous.as_ref() } else { None },
                 visit,
+                &outputs[slot],
             )?;
+            hidden_slot = Some(slot);
         }
         let hidden = self.read_blocks(&blocks, &hidden, "attn_res.output_query", 0)?;
         self.norm(&hidden, Some("norm.weight"), c.hidden_size, 1)
     }
     fn project(&mut self, hidden: &A::Buffer) -> Result<A::Buffer> {
-        let c = self.config.text_config.clone();
+        let c = self.text.clone();
         let offset = (self.batch - 1) * c.hidden_size;
         self.batch = 1;
         let logits = self.linear_offset(
@@ -1249,13 +1292,9 @@ impl<A: Accelerator> Inkling<A> {
     }
     fn logits(&mut self, hidden: &A::Buffer) -> Result<Vec<f32>> {
         let capped = self.project(hidden)?;
-        let bytes = self
-            .device
-            .read_prefix(&capped, self.config.text_config.unpadded_vocab_size * 4)?;
-        let logits: Vec<_> = bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-            .collect();
+        let mut logits = vec![0f32; self.config.text_config.unpadded_vocab_size];
+        self.device
+            .read_into(&capped, bytemuck::cast_slice_mut(&mut logits))?;
         ensure!(
             logits.iter().all(|x| x.is_finite()),
             "non-finite logits at position {}",
@@ -1286,7 +1325,8 @@ impl<A: Accelerator> Inkling<A> {
             32,
             32,
         )?;
-        let bytes = self.device.read_prefix(&result, 8)?;
+        let mut bytes = [0u8; 8];
+        self.device.read_into(&result, &mut bytes)?;
         let token = u32::from_le_bytes(bytes[..4].try_into().unwrap());
         let invalid = u32::from_le_bytes(bytes[4..].try_into().unwrap());
         ensure!(
@@ -1355,8 +1395,7 @@ impl<A: Accelerator> Inkling<A> {
         progress: &mut dyn FnMut(PrefillProgress),
     ) -> Result<A::Buffer> {
         self.validate_tokens(tokens)?;
-        let config = self
-            .config
+        self.config
             .vision_config
             .as_ref()
             .context("checkpoint has no vision encoder")?;
@@ -1376,16 +1415,20 @@ impl<A: Accelerator> Inkling<A> {
             "prompt must contain one contiguous image placeholder per image tile"
         );
         self.failed = true;
+        self.device.synchronize()?;
+        self.release_workspaces();
+        let config = self.config.vision_config.as_ref().unwrap();
         if self.vision.is_none() {
             progress(PrefillProgress::LoadingImageEncoder);
             let checkpoint = Checkpoint::open(&self.directory)?;
             self.vision = Some(VisionEncoder::load(&mut self.device, &checkpoint, config)?);
             progress(PrefillProgress::ImageEncoderLoaded);
         }
-        let features = self.vision.as_ref().unwrap().encode_with_progress(
+        let (features, feature_storage) = self.vision.as_ref().unwrap().encode_with_pool(
             &mut self.device,
             &self.kernels,
             image,
+            &mut self.pool,
             |completed_layers, total_layers| {
                 progress(PrefillProgress::ImageEncoding {
                     completed_layers,
@@ -1423,6 +1466,8 @@ impl<A: Accelerator> Inkling<A> {
                 });
             }
         }
+        drop(features);
+        self.pool.put(feature_storage);
         Ok(hidden.expect("nonempty prompt"))
     }
 
@@ -1482,12 +1527,12 @@ impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
         // old allocations can be retained without clearing their contents.
         if !self.caches.is_empty() {
             self.position = 0;
-            self.scratch_cursor = 0;
+            self.scratch.reset();
             self.failed = false;
             return Ok(());
         }
-        let c = self.config.text_config.clone();
-        for visit in c.schedule() {
+        let c = self.text.clone();
+        for visit in self.schedule.clone().iter().copied() {
             let (_, heads, dim) = c.attention_shape(visit.layer);
             let capacity = if c.is_local(visit.layer) {
                 self.capacity.min(c.sliding_window_size)
@@ -1502,8 +1547,10 @@ impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
             let bytes = (capacity * kv)
                 .checked_mul(self.kv_cache.bytes())
                 .context("KV cache size overflow")?;
-            let keys = self.device.allocate(bytes)?;
-            let values = self.device.allocate(bytes)?;
+            // SAFETY: attention reads only previous positions committed by
+            // cache_write; current positions come from the fresh K/V tensors.
+            let keys = unsafe { self.device.allocate_uninitialized(bytes)? };
+            let values = unsafe { self.device.allocate_uninitialized(bytes)? };
             self.caches.push(Cache {
                 keys,
                 values,
@@ -1549,7 +1596,7 @@ fn tensor<'a>(
     name: &str,
     shape: &[usize],
 ) -> Result<safetensors::tensor::TensorView<'a>> {
-    let tensor = cp.tensor(&format!("model.llm.{name}"))?;
+    let tensor = cp.tensor(&name!("model.llm.{name}"))?;
     ensure!(
         tensor.shape() == shape,
         "{name}: expected shape {shape:?}, got {:?}",
@@ -1789,7 +1836,8 @@ fn load_expert<A: Accelerator>(
         device.upload(&[0u8; 4])?
     };
     let lookup = if format == 0 {
-        let table = device.allocate(experts * 4096 * 4)?;
+        // SAFETY: nvfp4_decode_table writes every table element before lookup.
+        let table = unsafe { device.allocate_uninitialized(experts * 4096 * 4)? };
         // SAFETY: 4096 entries cover every FP4 code and FP8 scale per expert.
         unsafe {
             kernels.run(

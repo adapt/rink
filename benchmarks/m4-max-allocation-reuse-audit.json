@@ -1,0 +1,476 @@
+{
+  "date": "2026-11-22",
+  "baseline_revision": "6edd566",
+  "device": "Apple M4 Max, 40 GPU cores, 48 GiB unified memory",
+  "checkpoint_revision": "6e7c8248f75265bdd4fbab5273304243b5d8c2cb",
+  "method": "Counting Rust allocator plus size-only accelerator; actual model control flow, no GPU math or tensor data. Pending resources are retained through synchronization. Excludes Metal/Objective-C allocations, page rounding, driver overhead and process RSS. The new simulator skips direct host initialization callbacks; image host-fill time and CPU buffers are not comparable across versions. Images have synthetic pixels at 5344 by 3044. Times are simulator times, not inference throughput. Baseline image_after_text resets position before the image; the candidate retains text history, with the same capacity and working-memory budget.",
+  "before": [
+    {
+      "heap_allocations": 6238000,
+      "heap_bytes_requested": 1516544000,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 1043195,
+      "heap_reallocations": 9000,
+      "phase": "1000_checkpoint_tensor_lookups",
+      "seconds": 0.426326667
+    },
+    {
+      "heap_allocations": 5441269,
+      "heap_bytes_requested": 1327721346,
+      "heap_live_delta": 112785,
+      "heap_peak_above_start": 1401179,
+      "heap_reallocations": 9798,
+      "phase": "load",
+      "seconds": 0.360299041
+    },
+    {
+      "argument_vec_allocs": 40,
+      "argument_vec_reallocs": 120,
+      "argument_vec_requested_bytes": 28800,
+      "device_allocated_bytes": 27738560544,
+      "device_allocations": 1118,
+      "dispatches": 40,
+      "phase_device": "load",
+      "simulated_live_bytes": 27738560544,
+      "simulated_peak_bytes": 27738560544
+    },
+    {
+      "heap_allocations": 3837,
+      "heap_bytes_requested": 1807644,
+      "heap_live_delta": 4384,
+      "heap_peak_above_start": 7536,
+      "heap_reallocations": 5317,
+      "phase": "warmup_decode",
+      "seconds": 0.000403375
+    },
+    {
+      "heap_allocations": 370200,
+      "heap_bytes_requested": 180140400,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 2448,
+      "heap_reallocations": 530900,
+      "phase": "100_warm_decode_steps",
+      "seconds": 0.032522
+    },
+    {
+      "argument_vec_allocs": 173700,
+      "argument_vec_reallocs": 442700,
+      "argument_vec_requested_bytes": 169504800,
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 173700,
+      "phase_device": "100_warm_decode_steps",
+      "simulated_live_bytes": 27767240808,
+      "simulated_peak_bytes": 27767240808
+    },
+    {
+      "heap_allocations": 32723,
+      "heap_bytes_requested": 15842834,
+      "heap_live_delta": 192,
+      "heap_peak_above_start": 3824,
+      "heap_reallocations": 49108,
+      "phase": "8192_prefill",
+      "seconds": 0.002787
+    },
+    {
+      "argument_vec_allocs": 16108,
+      "argument_vec_reallocs": 41284,
+      "argument_vec_requested_bytes": 14955240,
+      "device_allocated_bytes": 3217294848,
+      "device_allocations": 148,
+      "dispatches": 16108,
+      "phase_device": "8192_prefill",
+      "simulated_live_bytes": 30685089576,
+      "simulated_peak_bytes": 30957595432
+    },
+    {
+      "heap_allocations": 32583,
+      "heap_bytes_requested": 15838354,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 2480,
+      "heap_reallocations": 49108,
+      "phase": "8192_prefill_repeated",
+      "seconds": 0.002795333
+    },
+    {
+      "argument_vec_allocs": 16108,
+      "argument_vec_reallocs": 41284,
+      "argument_vec_requested_bytes": 14955240,
+      "device_allocated_bytes": 32768,
+      "device_allocations": 8,
+      "dispatches": 16108,
+      "phase_device": "8192_prefill_repeated",
+      "simulated_live_bytes": 30685089576,
+      "simulated_peak_bytes": 30685093672
+    },
+    {
+      "heap_allocations": 370200,
+      "heap_bytes_requested": 180140400,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 2448,
+      "heap_reallocations": 530900,
+      "phase": "100_decode_after_prefill",
+      "seconds": 0.031176542
+    },
+    {
+      "argument_vec_allocs": 173700,
+      "argument_vec_reallocs": 442700,
+      "argument_vec_requested_bytes": 169504800,
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 173700,
+      "phase_device": "100_decode_after_prefill",
+      "simulated_live_bytes": 30685089576,
+      "simulated_peak_bytes": 30685089576
+    },
+    {
+      "heap_allocations": 1,
+      "heap_bytes_requested": 198105600,
+      "heap_live_delta": 198105600,
+      "heap_peak_above_start": 198105600,
+      "heap_reallocations": 0,
+      "phase": "image_cpu_patches",
+      "seconds": 0.046499458
+    },
+    {
+      "image_patch_bytes": 198105600,
+      "image_rgba_bytes": 65068544,
+      "image_tokens": 10318
+    },
+    {
+      "heap_allocations": 2694360,
+      "heap_bytes_requested": 865729103,
+      "heap_live_delta": 55683,
+      "heap_peak_above_start": 198161539,
+      "heap_reallocations": 79569,
+      "phase": "image_after_text",
+      "seconds": 0.233976375
+    },
+    {
+      "argument_vec_allocs": 24532,
+      "argument_vec_reallocs": 62848,
+      "argument_vec_requested_bytes": 22747944,
+      "device_allocated_bytes": 2790056760,
+      "device_allocations": 444,
+      "dispatches": 24532,
+      "phase_device": "image_after_text",
+      "simulated_live_bytes": 31322316584,
+      "simulated_peak_bytes": 33210964264
+    },
+    {
+      "heap_allocations": 49739,
+      "heap_bytes_requested": 222209588,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 198105856,
+      "heap_reallocations": 74908,
+      "phase": "image_repeated",
+      "seconds": 0.042612875
+    },
+    {
+      "argument_vec_allocs": 24532,
+      "argument_vec_reallocs": 62848,
+      "argument_vec_requested_bytes": 22747944,
+      "device_allocated_bytes": 2152829752,
+      "device_allocations": 22,
+      "dispatches": 24532,
+      "phase_device": "image_repeated",
+      "simulated_live_bytes": 31322316584,
+      "simulated_peak_bytes": 33210964264
+    },
+    {
+      "heap_allocations": 2694510,
+      "heap_bytes_requested": 865735823,
+      "heap_live_delta": 60259,
+      "heap_peak_above_start": 198161539,
+      "heap_reallocations": 79577,
+      "phase": "image_fresh_model",
+      "seconds": 0.209646542
+    },
+    {
+      "argument_vec_allocs": 24532,
+      "argument_vec_reallocs": 62848,
+      "argument_vec_requested_bytes": 22747944,
+      "device_allocated_bytes": 6008996332,
+      "device_allocations": 592,
+      "dispatches": 24532,
+      "phase_device": "image_fresh_model",
+      "simulated_live_bytes": 31322316584,
+      "simulated_peak_bytes": 31688219084
+    }
+  ],
+  "after": [
+    {
+      "heap_allocations": 1000,
+      "heap_bytes_requested": 16000,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 16,
+      "heap_reallocations": 0,
+      "phase": "1000_checkpoint_tensor_lookups",
+      "seconds": 0.000172541
+    },
+    {
+      "heap_allocations": 14219,
+      "heap_bytes_requested": 8287367,
+      "heap_live_delta": 127204,
+      "heap_peak_above_start": 1253501,
+      "heap_reallocations": 1028,
+      "phase": "load",
+      "seconds": 0.006955333
+    },
+    {
+      "device_allocated_bytes": 27738560544,
+      "device_allocations": 1118,
+      "dispatches": 40,
+      "phase_device": "load",
+      "simulated_live_bytes": 27738560544,
+      "simulated_peak_bytes": 27738560544
+    },
+    {
+      "heap_allocations": 18,
+      "heap_bytes_requested": 1120,
+      "heap_live_delta": 896,
+      "heap_peak_above_start": 928,
+      "heap_reallocations": 2,
+      "phase": "warmup_decode",
+      "seconds": 0.000416542
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "100_warm_decode_steps",
+      "seconds": 0.025502959
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 173700,
+      "phase_device": "100_warm_decode_steps",
+      "simulated_live_bytes": 27766473760,
+      "simulated_peak_bytes": 27766473760
+    },
+    {
+      "heap_allocations": 44,
+      "heap_bytes_requested": 5248,
+      "heap_live_delta": 3296,
+      "heap_peak_above_start": 3296,
+      "heap_reallocations": 5,
+      "phase": "8192_prefill",
+      "seconds": 0.0016815
+    },
+    {
+      "device_allocated_bytes": 1652658688,
+      "device_allocations": 44,
+      "dispatches": 16108,
+      "phase_device": "8192_prefill",
+      "simulated_live_bytes": 29393573408,
+      "simulated_peak_bytes": 29393573408
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "8192_prefill_repeated",
+      "seconds": 0.001614417
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 16108,
+      "phase_device": "8192_prefill_repeated",
+      "simulated_live_bytes": 29393573408,
+      "simulated_peak_bytes": 29393573408
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "100_decode_after_prefill",
+      "seconds": 0.016786
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 173700,
+      "phase_device": "100_decode_after_prefill",
+      "simulated_live_bytes": 29393573408,
+      "simulated_peak_bytes": 29393573408
+    },
+    {
+      "heap_allocations": 12614,
+      "heap_bytes_requested": 3556385,
+      "heap_live_delta": 59203,
+      "heap_peak_above_start": 1254155,
+      "heap_reallocations": 869,
+      "phase": "image_after_text",
+      "seconds": 0.0270965
+    },
+    {
+      "device_allocated_bytes": 2356820480,
+      "device_allocations": 429,
+      "dispatches": 24756,
+      "phase_device": "image_after_text",
+      "simulated_live_bytes": 30913274400,
+      "simulated_peak_bytes": 30913274400
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "image_repeated_0",
+      "seconds": 0.00165275
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 24532,
+      "phase_device": "image_repeated_0",
+      "simulated_live_bytes": 30913274400,
+      "simulated_peak_bytes": 30913274400
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "image_repeated_1",
+      "seconds": 0.001680083
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 24532,
+      "phase_device": "image_repeated_1",
+      "simulated_live_bytes": 30913274400,
+      "simulated_peak_bytes": 30913274400
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "image_repeated_2",
+      "seconds": 0.001678792
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 24532,
+      "phase_device": "image_repeated_2",
+      "simulated_live_bytes": 30913274400,
+      "simulated_peak_bytes": 30913274400
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "image_repeated_3",
+      "seconds": 0.001649666
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 24532,
+      "phase_device": "image_repeated_3",
+      "simulated_live_bytes": 30913274400,
+      "simulated_peak_bytes": 30913274400
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "image_repeated_4",
+      "seconds": 0.001640833
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 24532,
+      "phase_device": "image_repeated_4",
+      "simulated_live_bytes": 30913274400,
+      "simulated_peak_bytes": 30913274400
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "image_repeated_5",
+      "seconds": 0.001651541
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 24532,
+      "phase_device": "image_repeated_5",
+      "simulated_live_bytes": 30913274400,
+      "simulated_peak_bytes": 30913274400
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "image_repeated_6",
+      "seconds": 0.001647667
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 24532,
+      "phase_device": "image_repeated_6",
+      "simulated_live_bytes": 30913274400,
+      "simulated_peak_bytes": 30913274400
+    },
+    {
+      "heap_allocations": 0,
+      "heap_bytes_requested": 0,
+      "heap_live_delta": 0,
+      "heap_peak_above_start": 0,
+      "heap_reallocations": 0,
+      "phase": "image_repeated_7",
+      "seconds": 0.001641375
+    },
+    {
+      "device_allocated_bytes": 0,
+      "device_allocations": 0,
+      "dispatches": 24532,
+      "phase_device": "image_repeated_7",
+      "simulated_live_bytes": 30913274400,
+      "simulated_peak_bytes": 30913274400
+    },
+    {
+      "heap_allocations": 12664,
+      "heap_bytes_requested": 3559809,
+      "heap_live_delta": 63331,
+      "heap_peak_above_start": 1253195,
+      "heap_reallocations": 872,
+      "phase": "image_fresh_model",
+      "seconds": 0.002889792
+    },
+    {
+      "device_allocated_bytes": 4178664448,
+      "device_allocations": 476,
+      "dispatches": 24532,
+      "phase_device": "image_fresh_model",
+      "simulated_live_bytes": 30197631520,
+      "simulated_peak_bytes": 30264435232
+    }
+  ]
+}

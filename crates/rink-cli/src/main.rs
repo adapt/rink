@@ -344,6 +344,8 @@ fn generate(
         model.prefill_greedy_with_progress(tokens, |event| prefill.observe(event))
     }
     .context("prefilling prompt")?;
+    drop(encoded);
+    drop(image);
     eprintln!("Generating…");
     let start = Instant::now();
     // Keep protocol tokens visible so thinking and final-answer boundaries are explicit.

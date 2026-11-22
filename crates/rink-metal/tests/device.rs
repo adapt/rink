@@ -4,6 +4,79 @@ use rink_metal::Metal;
 
 #[test]
 #[ignore = "requires a Metal GPU"]
+fn views_bound_host_io_and_preserve_order_and_other_regions() {
+    use rink_core::Buffer;
+    let mut device = Metal::new().unwrap();
+    let source = KernelSource {
+        name: "view-test",
+        metal: Some(
+            "#include <metal_stdlib>\nusing namespace metal; kernel void copy_one(device uint* y [[buffer(0)]], device const uint* x [[buffer(1)]], uint i [[thread_position_in_grid]]) { if(i==0)y[0]=x[0]; }",
+        ),
+        cuda: None,
+        subgroup_size: None,
+    };
+    let kernel = device.compile(&source, "copy_one").unwrap();
+    let storage = device.upload(&[0x55; 1024]).unwrap();
+    let input = storage.view(256, 256).unwrap();
+    let output = storage.view(512, 256).unwrap();
+    let nested = storage.view(256, 768).unwrap().view(256, 4).unwrap();
+    device.write(&input, 0, &41u32.to_le_bytes()).unwrap();
+    // SAFETY: disjoint four-byte inputs/outputs in views of the same allocation.
+    unsafe {
+        device
+            .dispatch(
+                &kernel,
+                &[Argument::Buffer(&output), Argument::Buffer(&input)],
+                1,
+                32,
+            )
+            .unwrap();
+    }
+    // Host mutation must wait for the pending copy, even through an alias.
+    device.write(&storage, 256, &99u32.to_le_bytes()).unwrap();
+    let mut value = [0; 4];
+    device.read_into(&nested, &mut value).unwrap();
+    assert_eq!(value, 41u32.to_le_bytes());
+    assert_eq!(device.read_prefix(&input, 4).unwrap(), 99u32.to_le_bytes());
+    let floats = storage.view(768, 16).unwrap();
+    // SAFETY: every requested float is initialized.
+    unsafe {
+        device
+            .initialize_f32(&floats, 4, |v| {
+                for (i, x) in v.iter_mut().enumerate() {
+                    x.write(i as f32 - 1.);
+                }
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        device.read(&floats).unwrap(),
+        [-1f32, 0., 1., 2.]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>()
+    );
+    let bytes = device.read(&storage).unwrap();
+    for (i, byte) in bytes.iter().enumerate() {
+        if !(256..260).contains(&i) && !(512..516).contains(&i) && !(768..784).contains(&i) {
+            assert_eq!(*byte, 0x55);
+        }
+    }
+    assert!(storage.view(1, 4).is_err());
+    assert!(storage.view(1024, 1).is_err());
+    assert!(input.view(256, 1).is_err());
+    assert!(device.write(&input, 255, &[0; 2]).is_err());
+    assert!(device.write(&input, usize::MAX, &[]).is_err());
+    assert!(device.read_into(&nested, &mut [0; 5]).is_err());
+    let mut other = Metal::new().unwrap();
+    assert!(other.write(&input, 0, &[0]).is_err());
+    assert!(other.read_into(&nested, &mut [0; 4]).is_err());
+    drop(storage);
+    assert_eq!(device.read(&nested).unwrap(), 41u32.to_le_bytes());
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
 fn ordered_dispatch_keeps_resources_alive_and_synchronizes_reads() {
     let mut device = Metal::new().unwrap();
     let source = KernelSource {

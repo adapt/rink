@@ -1,15 +1,24 @@
 //! Memory-mapped SafeTensors loading. Files must not be modified while mapped.
 use anyhow::{Context, Result, ensure};
 use memmap2::Mmap;
-use safetensors::{SafeTensors, tensor::TensorView};
+use safetensors::{
+    SafeTensors,
+    tensor::{Metadata, TensorView},
+};
 use std::{
     collections::BTreeMap,
     fs::File,
     path::{Component, Path},
 };
 
+struct Shard {
+    map: Mmap,
+    metadata: Metadata,
+    data_start: usize,
+}
+
 pub struct Checkpoint {
-    maps: BTreeMap<String, Mmap>,
+    maps: BTreeMap<String, Shard>,
     index: BTreeMap<String, String>,
 }
 impl Checkpoint {
@@ -41,18 +50,32 @@ impl Checkpoint {
                 .with_context(|| format!("opening {filename}"))?;
             // SAFETY: read-only mapping. The caller must keep checkpoint files immutable.
             let map = unsafe { Mmap::map(&file)? };
-            let tensors = SafeTensors::deserialize(&map)
+            let (header, metadata) = SafeTensors::read_metadata(&map)
                 .with_context(|| format!("invalid SafeTensors file {filename}"))?;
             if index.is_empty() {
-                for name in tensors.names() {
+                for name in metadata.tensors().keys() {
                     index.insert(name.to_string(), filename.clone());
                 }
             }
-            maps.insert(filename, map);
+            maps.insert(
+                filename,
+                Shard {
+                    map,
+                    metadata,
+                    data_start: 8 + header,
+                },
+            );
         }
         let result = Self { maps, index };
         for (name, file) in &result.index {
-            ensure!(result.maps.contains_key(file), "missing shard for {name}");
+            let shard = result
+                .maps
+                .get(file)
+                .with_context(|| format!("missing shard for {name}"))?;
+            ensure!(
+                shard.metadata.info(name).is_some(),
+                "missing tensor {name} in {file}"
+            );
         }
         Ok(result)
     }
@@ -61,9 +84,19 @@ impl Checkpoint {
             .index
             .get(name)
             .with_context(|| format!("missing tensor {name}"))?;
-        SafeTensors::deserialize(&self.maps[file])?
-            .tensor(name)
-            .with_context(|| format!("loading {name}"))
+        let shard = &self.maps[file];
+        let info = shard
+            .metadata
+            .info(name)
+            .with_context(|| format!("missing tensor {name}"))?;
+        let (start, end) = info.data_offsets;
+        // read_metadata validated all offsets, shapes and the complete data extent.
+        TensorView::new(
+            info.dtype,
+            info.shape.clone(),
+            &shard.map[shard.data_start + start..shard.data_start + end],
+        )
+        .with_context(|| format!("loading {name}"))
     }
     pub fn contains(&self, name: &str) -> bool {
         self.index.contains_key(name)

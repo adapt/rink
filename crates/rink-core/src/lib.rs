@@ -10,6 +10,8 @@ pub enum AcceleratorKind {
 
 pub trait Buffer: Clone {
     fn byte_len(&self) -> usize;
+    /// A bounded view sharing the original allocation. Offsets must be 256-byte aligned.
+    fn view(&self, offset: usize, bytes: usize) -> Result<Self>;
 }
 
 /// Backend source variants of a model-owned kernel library.
@@ -40,6 +42,36 @@ pub unsafe trait Accelerator {
     fn name(&self) -> &str;
     fn allocate(&mut self, bytes: usize) -> Result<Self::Buffer>;
     fn upload(&mut self, bytes: &[u8]) -> Result<Self::Buffer>;
+    /// Allocate storage that will be overwritten before it is read.
+    ///
+    /// # Safety
+    /// Every byte read by the CPU or a kernel must first be initialized. This
+    /// applies to views and padding as well as the logical tensor elements.
+    unsafe fn allocate_uninitialized(&mut self, bytes: usize) -> Result<Self::Buffer> {
+        self.allocate(bytes)
+    }
+    /// Synchronize before replacing a bounded range, including through aliases.
+    fn write(&mut self, buffer: &Self::Buffer, offset: usize, data: &[u8]) -> Result<()>;
+    /// Initialize float storage without requiring a second full host buffer.
+    ///
+    /// # Safety
+    /// `fill` must initialize all `count` elements before returning normally.
+    unsafe fn initialize_f32(
+        &mut self,
+        buffer: &Self::Buffer,
+        count: usize,
+        fill: impl FnOnce(&mut [std::mem::MaybeUninit<f32>]),
+    ) -> Result<()> {
+        ensure!(
+            count <= buffer.byte_len() / 4,
+            "initialization exceeds buffer"
+        );
+        let mut values = vec![std::mem::MaybeUninit::<f32>::uninit(); count];
+        fill(&mut values);
+        // SAFETY: the caller guarantees every element was initialized.
+        let bytes = unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), count * 4) };
+        self.write(buffer, 0, bytes)
+    }
     fn compile(&mut self, source: &KernelSource<'_>, entry: &str) -> Result<Self::Kernel>;
 
     /// Enqueue a one-dimensional grid, rounded up to a whole threadgroup.
@@ -57,6 +89,11 @@ pub unsafe trait Accelerator {
     fn synchronize(&mut self) -> Result<()>;
     /// Synchronizes pending work before copying the entire buffer to host memory.
     fn read(&mut self, buffer: &Self::Buffer) -> Result<Vec<u8>>;
+    /// Synchronize and copy a prefix into caller-owned storage.
+    fn read_into(&mut self, buffer: &Self::Buffer, output: &mut [u8]) -> Result<()> {
+        output.copy_from_slice(&self.read_prefix(buffer, output.len())?);
+        Ok(())
+    }
     /// Read only a logical prefix of a reusable allocation.
     fn read_prefix(&mut self, buffer: &Self::Buffer, bytes: usize) -> Result<Vec<u8>> {
         ensure!(bytes <= buffer.byte_len(), "read exceeds buffer size");

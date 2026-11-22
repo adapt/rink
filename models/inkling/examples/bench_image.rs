@@ -1,5 +1,5 @@
 //! Fixed-work image benchmark and exact continuation-logit regression check.
-//! bench_image record|compare MODEL IMAGE SNAPSHOT [profile] [BATCH_LIMIT]
+//! bench_image record|compare MODEL IMAGE SNAPSHOT [profile] [BATCH_LIMIT] [warm]
 //! Snapshots contain private image-derived data; keep them outside the repository.
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
@@ -11,8 +11,8 @@ fn main() -> anyhow::Result<()> {
 
     let args: Vec<_> = std::env::args().collect();
     ensure!(
-        (5..=7).contains(&args.len()),
-        "usage: bench_image record|compare MODEL IMAGE SNAPSHOT [profile] [BATCH_LIMIT]"
+        (5..=8).contains(&args.len()),
+        "usage: bench_image record|compare MODEL IMAGE SNAPSHOT [profile] [BATCH_LIMIT] [warm]"
     );
     let record = match args[1].as_str() {
         "record" => true,
@@ -20,9 +20,13 @@ fn main() -> anyhow::Result<()> {
         _ => anyhow::bail!("expected record or compare"),
     };
     let mut profile = false;
+    let mut warm = false;
     let mut batch_limit = None;
     for option in &args[5..] {
-        if option == "profile" {
+        if option == "warm" {
+            ensure!(!warm, "duplicate warm option");
+            warm = true;
+        } else if option == "profile" {
             ensure!(!profile, "duplicate profile option");
             profile = true;
         } else {
@@ -49,6 +53,11 @@ fn main() -> anyhow::Result<()> {
     let mut model = Inkling::load_with_kv_cache(device, directory, 262144, KvCachePrecision::F16)?;
     let batch_limit = batch_limit.unwrap_or(model.prefill_batch_limit());
     model.set_prefill_batch_limit(batch_limit)?;
+    if warm {
+        model.prefill_greedy(&vec![0; 8192])?;
+        model.step_greedy(0)?;
+        model.reset()?;
+    }
     model.accelerator_mut().reset_stats();
     let start = Instant::now();
     let mut encoding_start = start;
@@ -117,7 +126,7 @@ fn main() -> anyhow::Result<()> {
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "device":model.device_name(), "image_width":image.width(), "image_height":image.height(),
-            "image_tokens":image.token_count(), "prompt_tokens":encoded.len(), "context":262144,
+            "image_tokens":image.token_count(), "prompt_tokens":encoded.len(), "context":262144, "warm_text_before_image":warm,
             "kv_cache":"f16", "effort":0.9, "prefill_batch_limit":batch_limit,
             "profile_kernels":profile, "encoding_seconds":encoding_seconds, "prefill_seconds":prefill_seconds,
             "prefill_tokens_per_second":encoded.len() as f64 / prefill_seconds, "preparation_seconds":preparation_seconds,

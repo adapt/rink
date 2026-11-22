@@ -122,12 +122,16 @@ impl<A: Accelerator> Kernels<A> {
         threads: usize,
         group: usize,
     ) -> Result<()> {
-        let mut args: Vec<_> = buffers.iter().map(|b| Argument::Buffer(*b)).collect();
-        // Parameter block is always binding 15. Unused slots need no resource binding.
-        while args.len() < 15 {
-            args.push(Argument::Skip);
+        assert!(
+            buffers.len() <= 15,
+            "kernel buffers overlap parameter binding"
+        );
+        let mut args = std::array::from_fn::<_, 16, _>(|_| Argument::Skip);
+        for (slot, buffer) in args.iter_mut().zip(buffers) {
+            *slot = Argument::Buffer(*buffer);
         }
-        args.push(Argument::Bytes(bytemuck::bytes_of(&p)));
+        // Parameter block is always binding 15.
+        args[15] = Argument::Bytes(bytemuck::bytes_of(&p));
         // SAFETY: forwarded caller contract; argument bytes live until dispatch copies them.
         unsafe { device.dispatch(&self.entries[name], &args, threads, group) }
     }
