@@ -5,7 +5,7 @@ use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 use std::path::Path;
 
 pub const IMAGE_TOKEN: &str = "<|unused_200054|>";
-pub const MAX_IMAGE_DIMENSION: u32 = 4096;
+pub const MAX_IMAGE_DIMENSION: u32 = 16_384;
 
 #[derive(Clone, Debug)]
 pub struct Image {
@@ -27,10 +27,13 @@ impl Image {
         let mut limits = Limits::default();
         limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
         limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+        // Allow a full-size RGBA image plus decoder working memory. The default
+        // 512 MiB budget is smaller than a 16K image's decoded pixels.
+        limits.max_alloc = Some(u64::from(MAX_IMAGE_DIMENSION).pow(2) * 8);
         reader.limits(limits);
-        let mut decoder = reader
-            .into_decoder()
-            .context("decoding image (maximum dimension is 4096 pixels)")?;
+        let mut decoder = reader.into_decoder().with_context(|| {
+            format!("decoding image (maximum dimension is {MAX_IMAGE_DIMENSION} pixels)")
+        })?;
         let color = decoder.color_type();
         ensure!(
             color.bits_per_pixel() == u16::from(color.channel_count()) * 8,
@@ -47,7 +50,7 @@ impl Image {
         ensure!(
             (1..=MAX_IMAGE_DIMENSION).contains(&width)
                 && (1..=MAX_IMAGE_DIMENSION).contains(&height),
-            "image dimensions must be in 1..=4096"
+            "image dimensions must be in 1..={MAX_IMAGE_DIMENSION}"
         );
         ensure!(
             rgba.len() == width as usize * height as usize * 4,

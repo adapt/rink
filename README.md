@@ -57,7 +57,7 @@ The reply limit includes reasoning tokens. The context limit covers the full con
 The KV cache uses FP16. Conversation history stays in memory until reset or exit.
 
 To ask about a picture, enter `/image /path/to/picture.png`, then enter your question.
-Each message can have one image. Images must use 8-bit channels and can be up to 4096 pixels on each side.
+Each message can have one image. Images must use 8-bit channels and can be up to 16,384 pixels on each side.
 rink keeps the original image size. Large images use more memory and take longer to process.
 
 Use `cargo run --release -- chat --help` to see all options.

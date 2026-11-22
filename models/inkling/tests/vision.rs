@@ -25,10 +25,46 @@ fn preprocessing_matches_reference_and_validates_inputs() {
         reference.tensor("patches").unwrap().data()
     );
     assert!(Image::from_rgba(0, 1, vec![]).is_err());
-    assert!(Image::from_rgba(4097, 1, vec![]).is_err());
     assert!(Image::from_rgba(2, 2, vec![0; 15]).is_err());
     assert!(Image::open(fixture().join("config.json")).is_err());
     assert!(Image::open(fixture().join("unsupported-16bit.png")).is_err());
+}
+
+#[test]
+fn image_dimension_limit_applies_on_each_axis() {
+    // Narrow images exercise both boundaries without allocating a 16K square.
+    for (width, height) in [(16_384, 1), (1, 16_384), (16_385, 1), (1, 16_385)] {
+        let accepted = width <= 16_384 && height <= 16_384;
+        let rgba = Image::from_rgba(width, height, vec![255; (width * height * 4) as usize]);
+        assert_eq!(rgba.is_ok(), accepted);
+        if !accepted {
+            assert!(rgba.unwrap_err().to_string().contains("1..=16384"));
+        }
+        for extension in ["png", "jpg"] {
+            let path = std::env::temp_dir().join(format!(
+                "rink-image-limit-{}-{width}-{height}.{extension}",
+                std::process::id()
+            ));
+            image::RgbImage::new(width, height).save(&path).unwrap();
+            let decoded = Image::open(&path);
+            std::fs::remove_file(path).unwrap();
+            if accepted {
+                let decoded = decoded.unwrap();
+                assert_eq!(
+                    (decoded.width(), decoded.height()),
+                    (width as usize, height as usize)
+                );
+                assert_eq!(decoded.token_count(), 410);
+            } else {
+                assert!(
+                    decoded
+                        .unwrap_err()
+                        .to_string()
+                        .contains("maximum dimension is 16384")
+                );
+            }
+        }
+    }
 }
 
 #[test]

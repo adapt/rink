@@ -109,6 +109,12 @@ impl<A: Accelerator> VisionEncoder<A> {
         let tokens = rows * cols;
         let patches = tokens * 4;
         let seq = patches + 1;
+        // The MLP is the largest native-patch workspace (m >= h). At 16K,
+        // wider configurations can exceed the kernels' 32-bit element indices.
+        ensure!(
+            seq.checked_mul(m).is_some_and(|n| n <= u32::MAX as usize),
+            "image is too large for this vision encoder's 32-bit indexing"
+        );
         let alloc = |device: &mut A, count: usize| device.allocate(count * 4);
         // A bounded set of workspaces, reused for all layers. Attention does not
         // allocate a quadratic score matrix.
