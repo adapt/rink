@@ -1,0 +1,92 @@
+{
+  "revision": "5819095c93583bf89de06b8e62af3de78ab78f31",
+  "date": "2026-11-22",
+  "device": "Apple M4 Max",
+  "checkpoint_revision": "6e7c8248f75265bdd4fbab5273304243b5d8c2cb",
+  "reference_transformers_revision": "6173a2f679ff4ed393afc499aefc569da7e68bc1",
+  "reference_script": "scripts/vision_reference.py",
+  "reference_torch_version": "2.8.0",
+  "precision": "Original BF16 matrix weights; FP32 activations and accumulation in Metal and CPU reference.",
+  "command": "target/release/examples/compare_vision checkpoints/inkling-2-mini /tmp/rink-native-vision-reference",
+  "feature_tolerance": {
+    "absolute": 2e-05,
+    "relative": 2e-05
+  },
+  "preprocessed_pixels_bit_identical": true,
+  "timing_note": "Single runs: preprocessing, workspace allocation, encoder execution and feature readback. Excludes weight loading and shader compilation.",
+  "cases": [
+    {
+      "features": 184320,
+      "image": "400x320.png",
+      "max_abs_error": 5.461275577545166e-06,
+      "relative_rms_error": 5.474572451037187e-06,
+      "rmse": 7.24439674824335e-07,
+      "seconds": 0.131760084,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 9216,
+      "image": "41x79.png",
+      "max_abs_error": 3.1888484954833984e-06,
+      "relative_rms_error": 4.451962904564872e-06,
+      "rmse": 7.174469270778025e-07,
+      "seconds": 0.013111958,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 78336,
+      "image": "641x41.png",
+      "max_abs_error": 7.3462724685668945e-06,
+      "relative_rms_error": 6.510674708804617e-06,
+      "rmse": 8.656480750240173e-07,
+      "seconds": 0.03657125,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 13824,
+      "image": "83x47.png",
+      "max_abs_error": 2.6226043701171875e-06,
+      "relative_rms_error": 3.5991231103121657e-06,
+      "rmse": 5.630595456142463e-07,
+      "seconds": 0.014793041,
+      "tolerance_violations": 0
+    }
+  ],
+  "chat_smoke": {
+    "context": 262144,
+    "effort": 0.1,
+    "max_tokens": 512,
+    "kv_cache": "f16",
+    "image_size": [
+      400,
+      240
+    ],
+    "image_text": "RINK 5731",
+    "image_shapes": [
+      "red square",
+      "blue circle"
+    ],
+    "image_tokens": 60,
+    "command": "target/release/rink chat --max-tokens 512 --effort 0.1",
+    "answers": [
+      "RINK 5731 \u2014 red square, blue circle.",
+      "5731",
+      "2",
+      "4"
+    ],
+    "checks": [
+      "JPEG input",
+      "text follow-up recalls image",
+      "second PNG image",
+      "reset",
+      "clear attachment",
+      "missing image file"
+    ]
+  },
+  "workspace_tests": {
+    "passed": 44,
+    "failed": 0,
+    "ignored": 0,
+    "command": "cargo test --release --workspace -- --include-ignored --test-threads=1"
+  }
+}
