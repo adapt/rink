@@ -90,7 +90,8 @@ struct Blocks<B> {
 }
 
 // The prefill workspace never exceeds the former 32-token, full-context
-// reservation. Larger batches use that same storage while history is short.
+// reservation. Query groups reuse that storage within each layer; the rest of
+// the decoder keeps its full batch even at long histories.
 fn attention_elements(c: &TextConfig, capacity: usize, history: usize, batch: usize) -> usize {
     (0..c.num_hidden_layers)
         .map(|layer| {
@@ -106,24 +107,26 @@ fn attention_elements(c: &TextConfig, capacity: usize, history: usize, batch: us
         .expect("validated nonempty layer schedule")
 }
 
-fn prefill_batch(
-    c: &TextConfig,
-    capacity: usize,
-    position: usize,
-    remaining: usize,
-    limit: usize,
-) -> usize {
+fn prefill_batch(remaining: usize, limit: usize) -> usize {
     // Retain the original short tail: batches below eight use different expert
     // kernels. Combining that tail with a large chunk would change reductions.
     if remaining < 32 {
         return remaining;
     }
-    let budget = attention_elements(c, capacity, capacity, 32);
     let mut batch = limit;
-    while batch > remaining || attention_elements(c, capacity, position + batch, batch) > budget {
+    while batch > remaining {
         batch /= 2;
     }
     batch
+}
+
+fn attention_query_batch(batch: usize, elements_per_query: usize, budget: usize) -> usize {
+    debug_assert!(elements_per_query <= budget);
+    let mut queries = batch;
+    while queries * elements_per_query > budget {
+        queries = queries.div_ceil(2);
+    }
+    queries
 }
 
 /// Single-sequence, streaming text decoder for the original Inkling 2 Mini checkpoint.
@@ -244,8 +247,8 @@ impl<A: Accelerator> Inkling<A> {
         &mut self.device
     }
 
-    /// Set the maximum prompt batch (32, 64 or 128 tokens). The decoder reduces
-    /// it as history grows to stay within the same attention workspace budget.
+    /// Set the maximum prompt batch (32, 64 or 128 tokens). Only attention query
+    /// groups shrink with history to stay within the fixed workspace budget.
     /// Resolution, precision and context capacity are unaffected.
     pub fn set_prefill_batch_limit(&mut self, tokens: usize) -> Result<()> {
         ensure!(
@@ -289,7 +292,7 @@ impl<A: Accelerator> Inkling<A> {
             self.attention_workspace = Some(self.device.allocate(bytes)?);
         }
         // Every partition buffer is consumed by attention_finish before the next
-        // layer overwrites it. The accelerator's ordered stream preserves this
+        // query group or layer overwrites it. The ordered stream preserves this
         // dependency, including across loop passes, without a CPU synchronization.
         Ok(self.attention_workspace.as_ref().unwrap().clone())
     }
@@ -733,7 +736,12 @@ impl<A: Accelerator> Inkling<A> {
             c.rel_extent
         };
         let parts = n.div_ceil(128);
-        let geometry = [
+        let query_batch = attention_query_batch(
+            self.batch,
+            qh * parts * (d + 2),
+            attention_elements(&c, self.capacity, self.capacity, 32),
+        );
+        let mut geometry = [
             qh,
             kh,
             d,
@@ -745,11 +753,12 @@ impl<A: Accelerator> Inkling<A> {
             parts,
             self.batch,
             self.kv_cache.shader_flag(),
+            0, // Query offset within the original batch; fresh KV keeps its base.
         ];
         // Prefill reserves a fixed budget before its first chunk. Decode keeps
         // its full-capacity reservation too, so history growth never reallocates.
         let partials = self.attention_workspace(
-            self.batch
+            query_batch
                 * qh
                 * parts.max(if self.batch == 1 {
                     capacity.div_ceil(128)
@@ -767,23 +776,30 @@ impl<A: Accelerator> Inkling<A> {
         } else {
             ("attention_partition_prefetch", 256)
         };
-        self.run(
-            partition_kernel,
-            &[&partials, &q, &keys, &values, &k, &v, &r, &profiles],
-            &geometry,
-            &[],
-            self.batch * qh * parts * partition_threads,
-            partition_threads,
-        )?;
         let gated = self.alloc(self.batch * qh * d)?;
-        self.run(
-            "attention_finish",
-            &[&gated, &partials, &sink, &gate],
-            &geometry,
-            &[],
-            self.batch * qh * 32,
-            32,
-        )?;
+        for offset in (0..self.batch).step_by(query_batch) {
+            let count = query_batch.min(self.batch - offset);
+            geometry[9] = count;
+            geometry[11] = offset;
+            self.run(
+                partition_kernel,
+                &[&partials, &q, &keys, &values, &k, &v, &r, &profiles],
+                &geometry,
+                &[],
+                count * qh * parts * partition_threads,
+                partition_threads,
+            )?;
+            self.run(
+                "attention_finish",
+                &[&gated, &partials, &sink, &gate],
+                &geometry,
+                &[],
+                count * qh * 32,
+                32,
+            )?;
+        }
+        // All groups must consume the original ring before any fresh KV is
+        // written. Their outputs stay in the full-batch gated buffer above.
         self.run(
             "cache_write",
             &[&keys, &values, &k, &v],
@@ -1293,13 +1309,7 @@ impl<A: Accelerator> Inkling<A> {
         let mut hidden = None;
         let mut completed = 0;
         while completed < tokens.len() {
-            let batch = prefill_batch(
-                &self.config.text_config,
-                self.capacity,
-                self.position,
-                tokens.len() - completed,
-                self.prefill_batch_limit,
-            );
+            let batch = prefill_batch(tokens.len() - completed, self.prefill_batch_limit);
             let chunk = &tokens[completed..completed + batch];
             hidden = Some(self.hidden(chunk)?);
             self.position += chunk.len();
@@ -1374,13 +1384,7 @@ impl<A: Accelerator> Inkling<A> {
         let mut hidden = None;
         let mut offset = 0;
         while offset < tokens.len() {
-            let batch = prefill_batch(
-                &self.config.text_config,
-                self.capacity,
-                self.position,
-                tokens.len() - offset,
-                self.prefill_batch_limit,
-            );
+            let batch = prefill_batch(tokens.len() - offset, self.prefill_batch_limit);
             let chunk = &tokens[offset..offset + batch];
             let lo = start.max(offset);
             let hi = end.min(offset + chunk.len());
@@ -1793,7 +1797,7 @@ mod workspace_tests {
     use super::*;
 
     #[test]
-    fn batches_fit_one_fixed_workspace_through_256k() {
+    fn full_batches_and_query_groups_fit_one_workspace_through_256k() {
         let config: Config =
             serde_json::from_str(include_str!("../tests/fixtures/official-config.json")).unwrap();
         let c = &config.text_config;
@@ -1803,21 +1807,38 @@ mod workspace_tests {
                 for start in [0, 1, capacity / 2 - 1, capacity - 33] {
                     let mut position = start;
                     while position < capacity {
-                        let n = prefill_batch(c, capacity, position, capacity - position, limit);
+                        let n = prefill_batch(capacity - position, limit);
                         assert!(n > 0 && n <= limit && n <= capacity - position);
+                        if capacity - position >= limit {
+                            assert_eq!(n, limit, "history must not shrink the decoder batch");
+                        }
                         assert!(n < 32 || n % 32 == 0);
-                        assert!(attention_elements(c, capacity, position + n, n) <= budget);
+                        for layer in 0..c.num_hidden_layers {
+                            let (heads, _, dim) = c.attention_shape(layer);
+                            let length = (position + n).min(capacity).min(if c.is_local(layer) {
+                                c.sliding_window_size
+                            } else {
+                                capacity
+                            });
+                            let per_query = heads * length.div_ceil(128) * (dim + 2);
+                            let group = attention_query_batch(n, per_query, budget);
+                            assert!(group > 0 && group <= n);
+                            assert!(group * per_query <= budget);
+                        }
                         position += n;
                     }
                 }
             }
         }
-        // At native capacity the batch shrinks before either reservation could
-        // overflow; the final partial chunk keeps its original 32-token boundary.
-        assert_eq!(prefill_batch(c, 262144, 0, 10342, 128), 128);
-        assert_eq!(prefill_batch(c, 262144, 65536, 65536, 128), 64);
-        assert_eq!(prefill_batch(c, 262144, 131072, 65536, 128), 32);
-        assert_eq!(prefill_batch(c, 262144, 10304, 38, 128), 32);
-        assert_eq!(prefill_batch(c, 262144, 10336, 6, 128), 6);
+        // Only attention groups shrink. Keep the original short-tail boundary.
+        let budget = attention_elements(c, 262144, 262144, 32);
+        assert_eq!(budget * 4, 780 * 1024 * 1024);
+        for (history, expected) in [(65536, 128), (131072, 64), (262144, 32)] {
+            let per_query = attention_elements(c, 262144, history, 1);
+            assert_eq!(attention_query_batch(128, per_query, budget), expected);
+        }
+        assert_eq!(prefill_batch(10342, 128), 128);
+        assert_eq!(prefill_batch(38, 128), 32);
+        assert_eq!(prefill_batch(6, 128), 6);
     }
 }

@@ -276,7 +276,9 @@ mod gpu {
                 model.set_prefill_batch_limit(limit).unwrap();
                 model.reset().unwrap();
                 let mut actual = Vec::new();
-                for prefix in [127, 63] {
+                // Image placeholders cross both decoder chunks and attention
+                // query groups, including the smaller groups near capacity.
+                for prefix in [127, 383, 191] {
                     actual.extend(model.prefill_image(&prompt(prefix), &image).unwrap());
                     for token in [4, 5, 6] {
                         actual.extend(model.step(token).unwrap());
@@ -408,6 +410,8 @@ mod gpu {
                 ]
             );
 
+            // Progress reports completed decoder batches, not the smaller
+            // attention query groups used within this 64-token chunk.
             let tokens = vec![1; 65];
             events.clear();
             model.reset().unwrap();
@@ -421,10 +425,6 @@ mod gpu {
                 [
                     Prompt {
                         completed_tokens: 0,
-                        total_tokens: 65
-                    },
-                    Prompt {
-                        completed_tokens: 32,
                         total_tokens: 65
                     },
                     Prompt {

@@ -1191,6 +1191,10 @@ fn partitioned_attention_matches_scalar_with_tails_ring_and_causal_chunks() {
             (513, 257, 1),
             (126, 257, 5),
             (600, 257, 7),
+            (129, 257, 128),
+            (33, 1024, 128),
+            (32767, 32768, 128),
+            (65537, 131072, 128),
             (8191, 8192, 1),
             (65535, 65536, 1),
             (262143, 262144, 1),
@@ -1324,6 +1328,90 @@ fn partitioned_attention_matches_scalar_with_tails_ring_and_causal_chunks() {
                 );
                 assert!(
                     bytes[length * 4..]
+                        .chunks_exact(4)
+                        .all(|b| b == f32::NAN.to_le_bytes())
+                );
+            }
+            // Reuse one partial buffer for query subsets. Compare with the
+            // original unsplit kernel, including nonzero offsets, tails and
+            // ring wrapping; all inputs remain based at the full chunk start.
+            let reference = device.read(&out).unwrap();
+            for (group, trim_parts) in [
+                (1, false),
+                (7, false),
+                (32, false),
+                (64, false),
+                (32, true),
+                (64, true),
+            ]
+            .into_iter()
+            .filter(|&(n, _)| n < batch)
+            {
+                let length = group * qh * parts * (dim + 2);
+                let partials = upload(&mut device, &vec![f32::NAN; length + 17]);
+                let output_length = batch * qh * dim;
+                let output = upload(&mut device, &vec![f32::NAN; output_length + 17]);
+                for offset in (0..batch).step_by(group) {
+                    let count = group.min(batch - offset);
+                    let mut p = Params::new(&geometry, &[]);
+                    p.u[9] = count as u32;
+                    p.u[11] = offset as u32;
+                    // Smaller old decoder chunks could end before the next
+                    // partition. Also check those shorter reductions at an
+                    // unaligned long-context base where compensation is used.
+                    let group_parts = if trim_parts {
+                        (position + offset + count).min(capacity).div_ceil(128)
+                    } else {
+                        parts
+                    };
+                    p.u[8] = group_parts as u32;
+                    // SAFETY: each group fits the shared partials and accesses
+                    // only its query rows in the full-batch input/output arrays.
+                    unsafe {
+                        kernels
+                            .run(
+                                &mut device,
+                                "attention_partition_prefetch",
+                                &[
+                                    &partials,
+                                    &buffers[0],
+                                    &buffers[1],
+                                    &buffers[2],
+                                    &buffers[3],
+                                    &buffers[4],
+                                    &buffers[5],
+                                    &buffers[6],
+                                ],
+                                p,
+                                count * qh * group_parts * 256,
+                                256,
+                            )
+                            .unwrap();
+                        kernels
+                            .run(
+                                &mut device,
+                                "attention_finish",
+                                &[&output, &partials, &buffers[7], &buffers[8]],
+                                p,
+                                count * qh * 32,
+                                32,
+                            )
+                            .unwrap();
+                    }
+                }
+                let actual = device.read(&output).unwrap();
+                assert_eq!(
+                    &actual[..output_length * 4],
+                    reference,
+                    "query group={group}, trim_parts={trim_parts}, fp16={fp16}, position={position}, capacity={capacity}"
+                );
+                assert!(
+                    actual[output_length * 4..]
+                        .chunks_exact(4)
+                        .all(|b| b == f32::NAN.to_le_bytes())
+                );
+                assert!(
+                    device.read(&partials).unwrap()[length * 4..]
                         .chunks_exact(4)
                         .all(|b| b == f32::NAN.to_le_bytes())
                 );
@@ -1551,7 +1639,9 @@ fn batched_prefill_matches_token_steps_across_chunk_boundaries() {
         serde_json::to_vec(&config).unwrap(),
     )
     .unwrap();
-    let tokens: Vec<u32> = (0..257).map(|i| (i * 7 % 14) as u32).collect();
+    // Reach the 64- and 32-query workspace limits while the decoder retains
+    // 128-token batches. Include a second prompt with an unaligned cache base.
+    let tokens: Vec<u32> = (0..641).map(|i| (i * 7 % 14) as u32).collect();
     for precision in [KvCachePrecision::F16, KvCachePrecision::F32] {
         let mut model =
             Inkling::load_with_kv_cache(Metal::new().unwrap(), &temporary, 768, precision).unwrap();
@@ -1559,7 +1649,8 @@ fn batched_prefill_matches_token_steps_across_chunk_boundaries() {
         for limit in [32, 64, 128] {
             model.set_prefill_batch_limit(limit).unwrap();
             model.reset().unwrap();
-            let mut actual = vec![model.prefill(&tokens).unwrap()];
+            let mut actual = vec![model.prefill(&tokens[..257]).unwrap()];
+            actual.push(model.prefill(&tokens[257..]).unwrap());
             for token in [3, 4, 5] {
                 actual.push(model.step(token).unwrap());
             }
@@ -1639,11 +1730,12 @@ fn large_context_shares_attention_workspace_and_reuses_it_after_reset() {
 }
 
 #[test]
-#[ignore = "requires a Metal GPU and about 2 GiB for full 256K attention geometry"]
+#[ignore = "requires a Metal GPU and about 5 GiB for the unsplit 256K reference"]
 fn full_256k_attention_geometry_retrieves_the_first_token() {
     let mut device = Metal::new().unwrap();
     let kernels = Kernels::compile(&mut device).unwrap();
-    for (capacity, batch) in [(65536usize, 128usize), (131072, 64), (262144, 32)] {
+    for (capacity, query_group) in [(65536usize, 128usize), (131072, 64), (262144, 32)] {
+        let batch = 128;
         let (qh, kh, dim) = (24usize, 8usize, 128usize);
         let position = capacity - batch;
         let elements = capacity * kh * dim;
@@ -1693,7 +1785,8 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
             &[],
         );
         // SAFETY: full released-model geometry with FP16 KV buffers, FP32 fresh
-        // rows and a 780 MiB partition workspace. Relative bias is identically zero.
+        // rows. The unsplit reference uses a larger workspace for comparison only.
+        // The production path below stays within 780 MiB at every history length.
         unsafe {
             kernels
                 .run(
@@ -1744,37 +1837,47 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
         }
         let reference_output = read(&mut device, &output);
         close(&reference_output, &expected, 0.00001);
-        // SAFETY: the production prefill kernel has the identical ABI and buffers.
-        unsafe {
-            kernels
-                .run(
-                    &mut device,
-                    "attention_partition_prefetch",
-                    &[
-                        &partials,
-                        &query,
-                        &keys,
-                        &values,
-                        &new_keys,
-                        &new_values,
-                        &rel,
-                        &profiles,
-                    ],
-                    geometry,
-                    batch * qh * parts * 256,
-                    256,
-                )
-                .unwrap();
-            kernels
-                .run(
-                    &mut device,
-                    "attention_finish",
-                    &[&output, &partials, &sinks, &gate],
-                    geometry,
-                    batch * qh * 32,
-                    32,
-                )
-                .unwrap();
+        drop(partials);
+        let workspace_bytes = query_group * qh * parts * (dim + 2) * 4;
+        assert_eq!(workspace_bytes, 780 * 1024 * 1024);
+        let partials = device.allocate(workspace_bytes).unwrap();
+        for offset in (0..batch).step_by(query_group) {
+            let mut p = geometry;
+            p.u[9] = query_group as u32;
+            p.u[11] = offset as u32;
+            // SAFETY: each query group fits the 780 MiB partial buffer; the
+            // inputs/output retain all 128 rows and the original KV base.
+            unsafe {
+                kernels
+                    .run(
+                        &mut device,
+                        "attention_partition_prefetch",
+                        &[
+                            &partials,
+                            &query,
+                            &keys,
+                            &values,
+                            &new_keys,
+                            &new_values,
+                            &rel,
+                            &profiles,
+                        ],
+                        p,
+                        query_group * qh * parts * 256,
+                        256,
+                    )
+                    .unwrap();
+                kernels
+                    .run(
+                        &mut device,
+                        "attention_finish",
+                        &[&output, &partials, &sinks, &gate],
+                        p,
+                        query_group * qh * 32,
+                        32,
+                    )
+                    .unwrap();
+            }
         }
         assert_eq!(
             bytemuck::cast_slice::<_, u8>(&read(&mut device, &output)),

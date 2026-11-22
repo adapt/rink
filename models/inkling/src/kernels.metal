@@ -462,7 +462,8 @@ inline float kv_read(device const uchar* cache, device const float* fresh, uint 
     if(is_new){float x=fresh[index];return fp16?float(half(x)):x;}
     return fp16?float(((device const half*)cache)[index]):((device const float*)cache)[index];
 }
-// Geometry: q_heads,kv_heads,dim,base_position,capacity,visible,d_rel,extent,parts,batch,FP16.
+// Geometry: q_heads,kv_heads,dim,base_position,capacity,visible,d_rel,extent,
+// parts,query_count,FP16,query_offset (prefetch/finish only; zero for other paths).
 kernel void attention_partition(device float* out [[buffer(0)]], device const float* q [[buffer(1)]], device const uchar* keys [[buffer(2)]], device const uchar* values [[buffer(3)]], device const float* new_keys [[buffer(4)]], device const float* new_values [[buffer(5)]], device const float* rel [[buffer(6)]], device const float* profiles [[buffer(7)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
     threadgroup float scores[128], maxima[4], totals[4];
     uint parts=p.u[8], query=group/parts, part=group%parts, h=query%p.u[0], token=query/p.u[0], d=p.u[2];
@@ -522,11 +523,13 @@ kernel void attention_partition_wide(device float* out [[buffer(0)]], device con
 }
 // Eight score groups suit larger grids. Prefetch four values, then consume
 // them in the original order, reusing the partition's initial cache slot.
+// p.u[11] is the query-token offset within the full batch. The partials start
+// at zero for every group; Q/relative inputs and fresh KV retain their full batch.
 kernel void attention_partition_prefetch(device float* out [[buffer(0)]], device const float* q [[buffer(1)]], device const uchar* keys [[buffer(2)]], device const uchar* values [[buffer(3)]], device const float* new_keys [[buffer(4)]], device const float* new_values [[buffer(5)]], device const float* rel [[buffer(6)]], device const float* profiles [[buffer(7)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
     threadgroup float scores[128], maxima[4], totals[4];
-    uint parts=p.u[8], query=group/parts, part=group%parts, h=query%p.u[0], token=query/p.u[0], d=p.u[2];
+    uint parts=p.u[8], query=group/parts+p.u[11]*p.u[0], part=group%parts, h=query%p.u[0], token=query/p.u[0], d=p.u[2];
     uint pos=p.u[3]+token,n=min(pos+1,p.u[4]),start=part*128,kh=h/(p.u[0]/p.u[1]),sg=tid/32;
-    uint dest=(query*parts+part)*(d+2);
+    uint dest=group*(d+2);
     if(start>=n){if(tid==0){out[dest]=-INFINITY;out[dest+1]=0;}for(uint i=tid;i<d;i+=256)out[dest+2+i]=0;return;}
     uint first_slot=(pos+1-n+start)%p.u[4];
     for(uint j=sg;j<128;j+=8){uint at=start+j;float score=-INFINITY;
@@ -558,8 +561,8 @@ kernel void attention_partition_prefetch(device float* out [[buffer(0)]], device
         sum+=scores[j]*kv_read(values,new_values,offset+i,fresh,p.u[10]);}out[dest+2+i]=sum;}
 }
 kernel void attention_finish(device float* y [[buffer(0)]], device const float* parts [[buffer(1)]], device const float* sinks [[buffer(2)]], device const float* gate [[buffer(3)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
-    uint query=t/32,d=p.u[2],n=p.u[8];if(query>=p.u[0]*p.u[9])return;
-    uint base=query*n*(d+2);float mx=sinks[query];for(uint j=lane;j<n;j+=32)mx=max(mx,parts[base+j*(d+2)]);mx=simd_max(mx);
+    uint local_query=t/32,d=p.u[2],n=p.u[8];if(local_query>=p.u[0]*p.u[9])return;
+    uint query=local_query+p.u[11]*p.u[0],base=local_query*n*(d+2);float mx=sinks[query];for(uint j=lane;j<n;j+=32)mx=max(mx,parts[base+j*(d+2)]);mx=simd_max(mx);
     // Thousands of tiny partition contributions can otherwise round away, or
     // round upward systematically, beside a dominant partition. Compensate long
     // reductions while retaining the short-context accumulation order.
