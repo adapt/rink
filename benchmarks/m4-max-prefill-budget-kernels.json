@@ -1,0 +1,287 @@
+{
+  "implementation_revision": "1966113",
+  "device": "Apple M4 Max",
+  "method": "Isolated GPU kernel timings at native full-attention dimensions: 24 query heads, 8 KV heads, head width 128, 32 queries, distinct FP16 key/value allocations. Warmup plus four measured trials in alternating order. Median is the mean of the middle two sorted trials. Every partition/output byte is compared with the original kernel. Not full-model throughput.",
+  "records": [
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 4096,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.005099229165352881,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.005040500080212951,
+        0.005332499975338578,
+        0.005090458318591118,
+        0.005108000012114644
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 4096,
+      "kernel": "attention_partition_queries4",
+      "median_gpu_seconds": 0.0023865000111982226,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.002378708333708346,
+        0.0025246667210012674,
+        0.0023942916886880994,
+        0.0020875416230410337
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 4096,
+      "kernel": "attention_finish",
+      "median_gpu_seconds": 4.2937579564750195e-05,
+      "outputs_bit_exact": true,
+      "trials_gpu_seconds": [
+        4.566670395433903e-05,
+        4.2499974370002747e-05,
+        4.333339165896177e-05,
+        4.2541767470538616e-05
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 4096,
+      "kernel": "attention_finish_cached",
+      "median_gpu_seconds": 3.516662400215864e-05,
+      "outputs_bit_exact": true,
+      "trials_gpu_seconds": [
+        3.4708296880126e-05,
+        3.724999260157347e-05,
+        3.4541706554591656e-05,
+        3.5624951124191284e-05
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 16384,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.016818020900245756,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.020040499977767467,
+        0.0178312084171921,
+        0.01580483338329941,
+        0.014797375071793795
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 16384,
+      "kernel": "attention_partition_queries4",
+      "median_gpu_seconds": 0.006622354150749743,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.008075208403170109,
+        0.0067392499186098576,
+        0.006505458382889628,
+        0.005839750054292381
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 16384,
+      "kernel": "attention_finish",
+      "median_gpu_seconds": 0.00018370832549408078,
+      "outputs_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.000191875034943223,
+        0.00018500001169741154,
+        0.00018241663929075003,
+        0.0001814583083614707
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 16384,
+      "kernel": "attention_finish_cached",
+      "median_gpu_seconds": 0.00012224999954923987,
+      "outputs_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.00012500002048909664,
+        0.00011862500105053186,
+        0.00012654170859605074,
+        0.0001194999786093831
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 65536,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.057428395841270685,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.057348333415575325,
+        0.05748587497510016,
+        0.057505999924615026,
+        0.05737091670744121
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 65536,
+      "kernel": "attention_partition_queries4",
+      "median_gpu_seconds": 0.022977770830038935,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.022940624970942736,
+        0.022972916718572378,
+        0.02298262494150549,
+        0.023045458365231752
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 65536,
+      "kernel": "attention_finish",
+      "median_gpu_seconds": 0.0009120417525991797,
+      "outputs_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.0009097500005736947,
+        0.0009105834178626537,
+        0.0009135000873357058,
+        0.0009183749789372087
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 65536,
+      "kernel": "attention_finish_cached",
+      "median_gpu_seconds": 0.0006019166903570294,
+      "outputs_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.000600833329372108,
+        0.0005983333103358746,
+        0.0006030000513419509,
+        0.000604333239607513
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 131072,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.12236231251154095,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.12203287496231496,
+        0.12291854165960103,
+        0.12218649999704212,
+        0.12253812502603978
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 131072,
+      "kernel": "attention_partition_queries4",
+      "median_gpu_seconds": 0.04699533333769068,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.046970916679129004,
+        0.04701974999625236,
+        0.04707758326549083,
+        0.04694525001104921
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 131072,
+      "kernel": "attention_finish",
+      "median_gpu_seconds": 0.001846041704993695,
+      "outputs_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.0018400000408291817,
+        0.0018288750434294343,
+        0.001879291608929634,
+        0.0018520833691582084
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 131072,
+      "kernel": "attention_finish_cached",
+      "median_gpu_seconds": 0.0013632707996293902,
+      "outputs_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.0013574999757111073,
+        0.0013407499063760042,
+        0.0013735416578128934,
+        0.0013690416235476732
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 262144,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.24527827085694298,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.2449096250347793,
+        0.24480350001249462,
+        0.24635487503837794,
+        0.24564691667910665
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 262144,
+      "kernel": "attention_partition_queries4",
+      "median_gpu_seconds": 0.09415547916432843,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.09407774999272078,
+        0.09412220830563456,
+        0.0941887500230223,
+        0.0942202917067334
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 262144,
+      "kernel": "attention_finish",
+      "median_gpu_seconds": 0.0036902499850839376,
+      "outputs_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.0037140833446756005,
+        0.0036887499736621976,
+        0.0036917499965056777,
+        0.0036807083524763584
+      ]
+    },
+    {
+      "batch": 32,
+      "fp16": true,
+      "history": 262144,
+      "kernel": "attention_finish_cached",
+      "median_gpu_seconds": 0.0028053958085365593,
+      "outputs_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.002804374904371798,
+        0.0028064167127013206,
+        0.0028092500288039446,
+        0.0028041666373610497
+      ]
+    }
+  ]
+}

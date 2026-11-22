@@ -55,6 +55,8 @@ Enter one message per line. Replies appear as the model generates them.
 Chat uses a 262,144-token context, a 16,384-token reply limit, and effort `0.9` by default.
 The reply limit includes reasoning tokens. The context limit covers the full conversation.
 The KV cache uses FP16. Conversation history stays in memory until reset or exit.
+Prefill uses batches of up to 2,048 tokens. Use `--prefill-batch 128` to reduce
+memory use. See the [performance measurements](benchmarks/long-context.md).
 
 To ask about a picture, enter `/image /path/to/picture.png`, then enter your question.
 Each message can have one image. Images must use 8-bit channels and can be up to 16,384 pixels on each side.
@@ -65,7 +67,8 @@ Progress goes to stderr. Use `--show-thinking` to read the reasoning text.
 
 Use `cargo run --release -- chat --help` to see all options.
 
-Inference supports up a 1 million token context window.
+The model configuration allows up to 1,048,576 tokens. This context does not fit
+in 48 GB of unified memory.
 
 ## AI disclosure
 

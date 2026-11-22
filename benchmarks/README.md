@@ -1,5 +1,8 @@
 # Metal inference benchmarks
 
+See [prefill speed and memory budgets](long-context.md) for the latest long-context
+measurements and batch settings.
+
 Initial optimization pass, measured November 20, 2026 on an Apple M4 Max with 48 GiB
 unified memory, using the original Inkling 2 Mini checkpoint at revision
 `6e7c8248f75265bdd4fbab5273304243b5d8c2cb` and a 4,096-token context limit.
