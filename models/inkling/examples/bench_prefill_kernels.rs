@@ -1,6 +1,6 @@
 //! Compare image and prefill attention schedules without a checkpoint.
 //! Timings use command buffers, without per-kernel instrumentation.
-//! bench_prefill_kernels [vision-sequence-length] (default: 4097)
+//! bench_prefill_kernels [vision-sequence-length] [--vision-only] (default: 4097)
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
     use rink_core::Accelerator;
@@ -29,6 +29,7 @@ fn main() -> anyhow::Result<()> {
     for (name, group, tile) in [
         ("vision_attention", 32, 8),
         ("vision_attention_64x16", 256, 16),
+        ("vision_attention_64x32", 256, 32),
     ] {
         let mut times = Vec::new();
         for trial in 0..4 {
@@ -65,6 +66,9 @@ fn main() -> anyhow::Result<()> {
         );
     }
     drop((q, k, v, y, reference));
+    if std::env::args().nth(2).as_deref() == Some("--vision-only") {
+        return Ok(());
+    }
     for fp16 in [false, true] {
         for length in [128usize, 1024, 8192, 10342] {
             let (qh, kh, dim, rel_dim, extent, batch) = (24, 8, 128, 16, 1024, 32);

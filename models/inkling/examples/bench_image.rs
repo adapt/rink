@@ -1,5 +1,5 @@
 //! Fixed-work image benchmark and exact continuation-logit regression check.
-//! bench_image record|compare MODEL IMAGE SNAPSHOT [profile]
+//! bench_image record|compare MODEL IMAGE SNAPSHOT [profile] [32|64|128]
 //! Snapshots contain private image-derived data; keep them outside the repository.
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
@@ -11,16 +11,26 @@ fn main() -> anyhow::Result<()> {
 
     let args: Vec<_> = std::env::args().collect();
     ensure!(
-        (5..=6).contains(&args.len()),
-        "usage: bench_image record|compare MODEL IMAGE SNAPSHOT [profile]"
+        (5..=7).contains(&args.len()),
+        "usage: bench_image record|compare MODEL IMAGE SNAPSHOT [profile] [32|64|128]"
     );
     let record = match args[1].as_str() {
         "record" => true,
         "compare" => false,
         _ => anyhow::bail!("expected record or compare"),
     };
-    let profile = args.get(5).is_some_and(|s| s == "profile");
-    ensure!(args.len() == 5 || profile, "expected profile");
+    let mut profile = false;
+    let mut batch_limit = None;
+    for option in &args[5..] {
+        if option == "profile" {
+            ensure!(!profile, "duplicate profile option");
+            profile = true;
+        } else {
+            ensure!(batch_limit.is_none(), "duplicate batch limit");
+            batch_limit = Some(option.parse::<usize>()?);
+        }
+    }
+    let batch_limit = batch_limit.unwrap_or(128);
     let directory = Path::new(&args[2]);
     let image = Image::open(&args[3])?;
     let tokenizer = tokenizers::Tokenizer::from_file(directory.join("tokenizer.json"))
@@ -38,6 +48,7 @@ fn main() -> anyhow::Result<()> {
         encoded.len()
     );
     let mut model = Inkling::load_with_kv_cache(device, directory, 262144, KvCachePrecision::F16)?;
+    model.set_prefill_batch_limit(batch_limit)?;
     model.accelerator_mut().reset_stats();
     let start = Instant::now();
     let mut encoding_start = start;
@@ -107,7 +118,7 @@ fn main() -> anyhow::Result<()> {
         serde_json::to_string_pretty(&serde_json::json!({
             "device":model.device_name(), "image_width":image.width(), "image_height":image.height(),
             "image_tokens":image.token_count(), "prompt_tokens":encoded.len(), "context":262144,
-            "kv_cache":"f16", "effort":0.9,
+            "kv_cache":"f16", "effort":0.9, "prefill_batch_limit":batch_limit,
             "profile_kernels":profile, "encoding_seconds":encoding_seconds, "prefill_seconds":prefill_seconds,
             "prefill_tokens_per_second":encoded.len() as f64 / prefill_seconds, "preparation_seconds":preparation_seconds,
             "peak_allocated_bytes":s.peak_allocated_bytes, "device_allocated_bytes":model.accelerator().allocated_memory(),

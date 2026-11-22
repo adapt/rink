@@ -46,6 +46,7 @@ impl<A: Accelerator> Kernels<A> {
             "vision_rope",
             "vision_attention",
             "vision_attention_64x16",
+            "vision_attention_64x32",
             "nvfp4_decode_table",
             "expert_matvec_nvfp4",
             "expert_swiglu_nvfp4",

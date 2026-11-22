@@ -89,6 +89,43 @@ struct Blocks<B> {
     offset: usize,
 }
 
+// The prefill workspace never exceeds the former 32-token, full-context
+// reservation. Larger batches use that same storage while history is short.
+fn attention_elements(c: &TextConfig, capacity: usize, history: usize, batch: usize) -> usize {
+    (0..c.num_hidden_layers)
+        .map(|layer| {
+            let (heads, _, dim) = c.attention_shape(layer);
+            let length = history.min(capacity).min(if c.is_local(layer) {
+                c.sliding_window_size
+            } else {
+                capacity
+            });
+            batch * heads * length.div_ceil(128) * (dim + 2)
+        })
+        .max()
+        .expect("validated nonempty layer schedule")
+}
+
+fn prefill_batch(
+    c: &TextConfig,
+    capacity: usize,
+    position: usize,
+    remaining: usize,
+    limit: usize,
+) -> usize {
+    // Retain the original short tail: batches below eight use different expert
+    // kernels. Combining that tail with a large chunk would change reductions.
+    if remaining < 32 {
+        return remaining;
+    }
+    let budget = attention_elements(c, capacity, capacity, 32);
+    let mut batch = limit;
+    while batch > remaining || attention_elements(c, capacity, position + batch, batch) > budget {
+        batch /= 2;
+    }
+    batch
+}
+
 /// Single-sequence, streaming text decoder for the original Inkling 2 Mini checkpoint.
 /// Uses float32 activations and accumulation, with native packed expert storage.
 pub struct Inkling<A: Accelerator> {
@@ -107,6 +144,10 @@ pub struct Inkling<A: Accelerator> {
     failed: bool,
     scratch: Vec<A::Buffer>,
     scratch_cursor: usize,
+    layer_scratch: Vec<A::Buffer>,
+    layer_scratch_cursor: usize,
+    in_layer: bool,
+    prefill_batch_limit: usize,
     batch: usize,
 }
 
@@ -181,6 +222,10 @@ impl<A: Accelerator> Inkling<A> {
             failed: false,
             scratch: Vec::new(),
             scratch_cursor: 0,
+            layer_scratch: Vec::new(),
+            layer_scratch_cursor: 0,
+            in_layer: false,
+            prefill_batch_limit: 128,
             batch: 1,
         };
         model.reset()?;
@@ -199,16 +244,33 @@ impl<A: Accelerator> Inkling<A> {
         &mut self.device
     }
 
+    /// Set the maximum prompt batch (32, 64 or 128 tokens). The decoder reduces
+    /// it as history grows to stay within the same attention workspace budget.
+    /// Resolution, precision and context capacity are unaffected.
+    pub fn set_prefill_batch_limit(&mut self, tokens: usize) -> Result<()> {
+        ensure!(
+            [32, 64, 128].contains(&tokens),
+            "prefill batch limit must be 32, 64 or 128"
+        );
+        self.prefill_batch_limit = tokens;
+        Ok(())
+    }
+
     fn alloc(&mut self, n: usize) -> Result<A::Buffer> {
         let bytes = n.checked_mul(4).context("buffer size overflow")?;
-        let index = self.scratch_cursor;
-        if index == self.scratch.len() {
-            self.scratch.push(self.device.allocate(bytes)?);
-        } else if self.scratch[index].byte_len() < bytes {
-            self.scratch[index] = self.device.allocate(bytes)?;
+        let (scratch, cursor) = if self.in_layer {
+            (&mut self.layer_scratch, &mut self.layer_scratch_cursor)
+        } else {
+            (&mut self.scratch, &mut self.scratch_cursor)
+        };
+        let index = *cursor;
+        if index == scratch.len() {
+            scratch.push(self.device.allocate(bytes)?);
+        } else if scratch[index].byte_len() < bytes {
+            scratch[index] = self.device.allocate(bytes)?;
         }
-        self.scratch_cursor += 1;
-        Ok(self.scratch[index].clone())
+        *cursor += 1;
+        Ok(scratch[index].clone())
     }
     fn alloc_state(&mut self, n: usize) -> Result<A::Buffer> {
         self.device
@@ -509,6 +571,7 @@ impl<A: Accelerator> Inkling<A> {
         routing: Option<&A::Buffer>,
         residual: Option<&A::Buffer>,
         visit: Visit,
+        output: Option<&A::Buffer>,
     ) -> Result<A::Buffer> {
         let c = &self.config.text_config;
         let h = c.hidden_size;
@@ -546,7 +609,10 @@ impl<A: Accelerator> Inkling<A> {
             )?;
             if let Some(residual) = residual {
                 let n = h * self.batch;
-                let y = self.alloc(n)?;
+                let y = match output {
+                    Some(output) => output.clone(),
+                    None => self.alloc(n)?,
+                };
                 self.run("add", &[&y, residual, &convolved], &[n], &[], n, 128)?;
                 return Ok(y);
             }
@@ -562,7 +628,10 @@ impl<A: Accelerator> Inkling<A> {
             top,
             usize::from(residual.is_some()),
         ];
-        let y = self.alloc(h * self.batch)?;
+        let y = match output {
+            Some(output) => output.clone(),
+            None => self.alloc(h * self.batch)?,
+        };
         self.run(
             "residual_convolution",
             &[
@@ -677,10 +746,18 @@ impl<A: Accelerator> Inkling<A> {
             self.batch,
             self.kv_cache.shader_flag(),
         ];
-        // Reserve for this batch at the configured capacity, avoiding reallocations
-        // as history grows. All visits share this allocation, including local layers.
-        let partials =
-            self.attention_workspace(self.batch * qh * capacity.div_ceil(128) * (d + 2))?;
+        // Prefill reserves a fixed budget before its first chunk. Decode keeps
+        // its full-capacity reservation too, so history growth never reallocates.
+        let partials = self.attention_workspace(
+            self.batch
+                * qh
+                * parts.max(if self.batch == 1 {
+                    capacity.div_ceil(128)
+                } else {
+                    0
+                })
+                * (d + 2),
+        )?;
         let profiles = self.w(&format!("{p}.rel_logits_proj.proj"));
         // More score groups hide latency on small decode grids. Both larger
         // decode grids and prompt batches benefit from ordered value prefetch.
@@ -853,7 +930,13 @@ impl<A: Accelerator> Inkling<A> {
             max_tiles,
         })
     }
-    fn moe(&mut self, x: &A::Buffer, residual: &A::Buffer, visit: Visit) -> Result<A::Buffer> {
+    fn moe(
+        &mut self,
+        x: &A::Buffer,
+        residual: &A::Buffer,
+        visit: Visit,
+        output: &A::Buffer,
+    ) -> Result<A::Buffer> {
         let c = self.config.text_config.clone();
         let layer = visit.layer;
         let logits = self.linear(
@@ -879,7 +962,7 @@ impl<A: Accelerator> Inkling<A> {
         };
         let activated = self.expert_projection(layer, false, x, &routing, groups.as_ref())?;
         let down = self.expert_projection(layer, true, &activated, &routing, groups.as_ref())?;
-        self.residual_conv(&down, Some(&routing), Some(residual), visit)
+        self.residual_conv(&down, Some(&routing), Some(residual), visit, Some(output))
     }
     fn layer(
         &mut self,
@@ -887,6 +970,24 @@ impl<A: Accelerator> Inkling<A> {
         blocks: &mut Blocks<A::Buffer>,
         previous: Option<&(Blocks<A::Buffer>, A::Buffer)>,
         visit: Visit,
+    ) -> Result<A::Buffer> {
+        // Only this result, the residual banks and the prelude/previous-pass
+        // state survive a layer. Keep them in the outer pool; every other
+        // activation can be overwritten by the next layer's ordered commands.
+        let output = self.alloc(self.config.text_config.hidden_size * self.batch)?;
+        self.layer_scratch_cursor = 0;
+        self.in_layer = true;
+        let result = self.layer_inner(hidden, blocks, previous, visit, &output);
+        self.in_layer = false;
+        result
+    }
+    fn layer_inner(
+        &mut self,
+        hidden: &A::Buffer,
+        blocks: &mut Blocks<A::Buffer>,
+        previous: Option<&(Blocks<A::Buffer>, A::Buffer)>,
+        visit: Visit,
+        output: &A::Buffer,
     ) -> Result<A::Buffer> {
         let c = self.config.text_config.clone();
         let h = c.hidden_size;
@@ -954,6 +1055,7 @@ impl<A: Accelerator> Inkling<A> {
             None,
             if boundary { None } else { Some(hidden) },
             visit,
+            None,
         )?;
         if boundary {
             self.copy(
@@ -983,7 +1085,7 @@ impl<A: Accelerator> Inkling<A> {
             x
         };
         let x = self.norm(&x, Some(&format!("{prefix}.mlp_norm.weight")), h, 1)?;
-        self.moe(&x, &residual, visit)
+        self.moe(&x, &residual, visit, output)
     }
     fn hidden(&mut self, tokens: &[u32]) -> Result<A::Buffer> {
         self.hidden_with_image(tokens, None)
@@ -1178,18 +1280,34 @@ impl<A: Accelerator> Inkling<A> {
     ) -> Result<A::Buffer> {
         self.validate_tokens(tokens)?;
         self.failed = true;
+        self.attention_workspace(attention_elements(
+            &self.config.text_config,
+            self.capacity,
+            self.capacity,
+            tokens.len().min(32),
+        ))?;
         progress(PrefillProgress::Prompt {
             completed_tokens: 0,
             total_tokens: tokens.len(),
         });
         let mut hidden = None;
-        for (i, chunk) in tokens.chunks(32).enumerate() {
+        let mut completed = 0;
+        while completed < tokens.len() {
+            let batch = prefill_batch(
+                &self.config.text_config,
+                self.capacity,
+                self.position,
+                tokens.len() - completed,
+                self.prefill_batch_limit,
+            );
+            let chunk = &tokens[completed..completed + batch];
             hidden = Some(self.hidden(chunk)?);
             self.position += chunk.len();
-            if (i + 1) * 32 < tokens.len() {
+            completed += chunk.len();
+            if completed < tokens.len() {
                 self.device.synchronize()?;
                 progress(PrefillProgress::Prompt {
-                    completed_tokens: (i + 1) * 32,
+                    completed_tokens: completed,
                     total_tokens: tokens.len(),
                 });
             }
@@ -1243,22 +1361,37 @@ impl<A: Accelerator> Inkling<A> {
             },
         )?;
         progress(PrefillProgress::ImageEncoded);
+        self.attention_workspace(attention_elements(
+            &self.config.text_config,
+            self.capacity,
+            self.capacity,
+            tokens.len().min(32),
+        ))?;
         progress(PrefillProgress::Prompt {
             completed_tokens: 0,
             total_tokens: tokens.len(),
         });
         let mut hidden = None;
-        for (i, chunk) in tokens.chunks(32).enumerate() {
-            let offset = i * 32;
+        let mut offset = 0;
+        while offset < tokens.len() {
+            let batch = prefill_batch(
+                &self.config.text_config,
+                self.capacity,
+                self.position,
+                tokens.len() - offset,
+                self.prefill_batch_limit,
+            );
+            let chunk = &tokens[offset..offset + batch];
             let lo = start.max(offset);
             let hi = end.min(offset + chunk.len());
             let replacement = (lo < hi).then(|| (&features, lo - start, lo - offset, hi - lo));
             hidden = Some(self.hidden_with_image(chunk, replacement)?);
             self.position += chunk.len();
-            if offset + chunk.len() < tokens.len() {
+            offset += chunk.len();
+            if offset < tokens.len() {
                 self.device.synchronize()?;
                 progress(PrefillProgress::Prompt {
-                    completed_tokens: offset + chunk.len(),
+                    completed_tokens: offset,
                     total_tokens: tokens.len(),
                 });
             }
@@ -1653,4 +1786,38 @@ fn load_expert<A: Accelerator>(
         factors,
         format,
     })
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    #[test]
+    fn batches_fit_one_fixed_workspace_through_256k() {
+        let config: Config =
+            serde_json::from_str(include_str!("../tests/fixtures/official-config.json")).unwrap();
+        let c = &config.text_config;
+        for capacity in [128, 4096, 65536, 131072, 262144] {
+            let budget = attention_elements(c, capacity, capacity, 32);
+            for limit in [32, 64, 128] {
+                for start in [0, 1, capacity / 2 - 1, capacity - 33] {
+                    let mut position = start;
+                    while position < capacity {
+                        let n = prefill_batch(c, capacity, position, capacity - position, limit);
+                        assert!(n > 0 && n <= limit && n <= capacity - position);
+                        assert!(n < 32 || n % 32 == 0);
+                        assert!(attention_elements(c, capacity, position + n, n) <= budget);
+                        position += n;
+                    }
+                }
+            }
+        }
+        // At native capacity the batch shrinks before either reservation could
+        // overflow; the final partial chunk keeps its original 32-token boundary.
+        assert_eq!(prefill_batch(c, 262144, 0, 10342, 128), 128);
+        assert_eq!(prefill_batch(c, 262144, 65536, 65536, 128), 64);
+        assert_eq!(prefill_batch(c, 262144, 131072, 65536, 128), 32);
+        assert_eq!(prefill_batch(c, 262144, 10304, 38, 128), 32);
+        assert_eq!(prefill_batch(c, 262144, 10336, 6, 128), 6);
+    }
 }

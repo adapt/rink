@@ -264,7 +264,7 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                 .unwrap();
             }
         }
-        for batch in [1usize, 2, 8, 17, 32, 33] {
+        for batch in [1usize, 2, 8, 17, 32, 33, 64, 128] {
             for sparse in [false, true] {
                 let routes: Vec<_> = (0..batch * top)
                     .flat_map(|slot| {
@@ -1543,6 +1543,34 @@ fn batched_prefill_matches_token_steps_across_chunk_boundaries() {
             rink_core::greedy(&model.step(3).unwrap()).unwrap()
         });
     }
+    // Larger batches must preserve the complete continuation, including loop
+    // messages, convolution state and a partial final chunk, in both KV formats.
+    config["text_config"]["model_max_length"] = 768.into();
+    std::fs::write(
+        temporary.join("config.json"),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
+    let tokens: Vec<u32> = (0..257).map(|i| (i * 7 % 14) as u32).collect();
+    for precision in [KvCachePrecision::F16, KvCachePrecision::F32] {
+        let mut model =
+            Inkling::load_with_kv_cache(Metal::new().unwrap(), &temporary, 768, precision).unwrap();
+        let mut expected = None;
+        for limit in [32, 64, 128] {
+            model.set_prefill_batch_limit(limit).unwrap();
+            model.reset().unwrap();
+            let mut actual = vec![model.prefill(&tokens).unwrap()];
+            for token in [3, 4, 5] {
+                actual.push(model.step(token).unwrap());
+            }
+            let bits: Vec<_> = actual.iter().flatten().map(|v| v.to_bits()).collect();
+            if let Some(expected) = &expected {
+                assert_eq!(&bits, expected, "batch={limit}, kv={precision}");
+            } else {
+                expected = Some(bits);
+            }
+        }
+    }
     std::fs::remove_dir_all(temporary).unwrap();
 }
 
@@ -1615,139 +1643,64 @@ fn large_context_shares_attention_workspace_and_reuses_it_after_reset() {
 fn full_256k_attention_geometry_retrieves_the_first_token() {
     let mut device = Metal::new().unwrap();
     let kernels = Kernels::compile(&mut device).unwrap();
-    let (capacity, batch, qh, kh, dim) = (262144usize, 32usize, 24usize, 8usize, 128usize);
-    let position = capacity - batch;
-    let elements = capacity * kh * dim;
-    let mut data = vec![0u16; elements];
-    for head in 0..kh {
-        data[head * dim] = half::f16::from_f32(20.).to_bits();
-    }
-    // The last 32 cache entries are not yet written. Attention must use the
-    // fresh input rows for these positions, with causal masking within the chunk.
-    data[position * kh * dim..].fill(half::f16::NAN.to_bits());
-    let keys = device.upload(bytemuck::cast_slice(&data)).unwrap();
-    data.fill(half::f16::from_f32(0.25).to_bits());
-    let first_value = |head: usize, channel: usize| {
-        if channel % 2 == 0 {
-            1. + head as f32 / 8.
-        } else {
-            -1.
+    for (capacity, batch) in [(65536usize, 128usize), (131072, 64), (262144, 32)] {
+        let (qh, kh, dim) = (24usize, 8usize, 128usize);
+        let position = capacity - batch;
+        let elements = capacity * kh * dim;
+        let mut data = vec![0u16; elements];
+        for head in 0..kh {
+            data[head * dim] = half::f16::from_f32(20.).to_bits();
         }
-    };
-    for head in 0..kh {
-        for channel in 0..dim {
-            data[head * dim + channel] = half::f16::from_f32(first_value(head, channel)).to_bits();
-        }
-    }
-    data[position * kh * dim..].fill(half::f16::NAN.to_bits());
-    let values = device.upload(bytemuck::cast_slice(&data)).unwrap();
-    drop(data);
-    let mut queries = vec![0.; batch * qh * dim];
-    for query in queries.chunks_exact_mut(dim) {
-        query[0] = (dim as f32).sqrt();
-    }
-    let query = upload(&mut device, &queries);
-    let new_keys = upload(&mut device, &vec![0.; batch * kh * dim]);
-    let new_values = upload(&mut device, &vec![0.75; batch * kh * dim]);
-    let rel = upload(&mut device, &vec![0.; batch * qh]);
-    let profiles = upload(&mut device, &[0.]);
-    let sinks = upload(&mut device, &vec![0.; batch * qh]);
-    let gate = upload(&mut device, &vec![0.; batch * qh * dim]);
-    let parts = capacity.div_ceil(128);
-    let partials = device.allocate(batch * qh * parts * (dim + 2) * 4).unwrap();
-    let output = device.allocate(batch * qh * dim * 4).unwrap();
-    let geometry = Params::new(
-        &[
-            qh, kh, dim, position, capacity, capacity, 1, 1, parts, batch, 1,
-        ],
-        &[],
-    );
-    // SAFETY: full released-model geometry with FP16 KV buffers, FP32 fresh
-    // rows and a 780 MiB partition workspace. Relative bias is identically zero.
-    unsafe {
-        kernels
-            .run(
-                &mut device,
-                "attention_partition",
-                &[
-                    &partials,
-                    &query,
-                    &keys,
-                    &values,
-                    &new_keys,
-                    &new_values,
-                    &rel,
-                    &profiles,
-                ],
-                geometry,
-                batch * qh * parts * 128,
-                128,
-            )
-            .unwrap();
-        kernels
-            .run(
-                &mut device,
-                "attention_finish",
-                &[&output, &partials, &sinks, &gate],
-                geometry,
-                batch * qh * 32,
-                32,
-            )
-            .unwrap();
-    }
-    let mut expected = Vec::with_capacity(batch * qh * dim);
-    for token in 0..batch {
-        let n = position + token + 1;
-        // The first cached key scores 20; every other key and the sink score 0.
-        // Summing these weights analytically avoids a second huge attention matrix.
-        let first_weight = 20f64.exp();
-        let denominator = first_weight + n as f64;
-        for head in 0..qh {
+        // The last batch of cache entries are not yet written. Attention must use the
+        // fresh input rows for these positions, with causal masking within the chunk.
+        data[position * kh * dim..].fill(half::f16::NAN.to_bits());
+        let keys = device.upload(bytemuck::cast_slice(&data)).unwrap();
+        data.fill(half::f16::from_f32(0.25).to_bits());
+        let first_value = |head: usize, channel: usize| {
+            if channel % 2 == 0 {
+                1. + head as f32 / 8.
+            } else {
+                -1.
+            }
+        };
+        for head in 0..kh {
             for channel in 0..dim {
-                let numerator = first_weight * f64::from(first_value(head / (qh / kh), channel))
-                    + (position - 1) as f64 * 0.25
-                    + (token + 1) as f64 * 0.75;
-                expected.push((0.5 * numerator / denominator) as f32);
+                data[head * dim + channel] =
+                    half::f16::from_f32(first_value(head, channel)).to_bits();
             }
         }
-    }
-    close(&read(&mut device, &output), &expected, 0.00001);
-
-    // Also compare the decode path at the released model's full cache geometry.
-    // Only the first fresh token is visible; unwritten later slots contain NaNs.
-    let length = qh * parts * (dim + 2);
-    let initial = vec![f32::NAN; length + 17];
-    let reference = upload(&mut device, &initial);
-    let candidate = upload(&mut device, &initial);
-    let decode_geometry = Params::new(
-        &[
-            qh,
-            kh,
-            dim,
-            position,
-            capacity,
-            position + 1,
-            1,
-            1,
-            parts,
-            1,
-            1,
-        ],
-        &[],
-    );
-    for (name, buffer, threads) in [
-        ("attention_partition", &reference, 128),
-        ("attention_partition_prefetch", &candidate, 256),
-    ] {
-        // SAFETY: the same native caches and first fresh token serve both kernels;
-        // each output has one token's partitions plus unwritten sentinel guards.
+        data[position * kh * dim..].fill(half::f16::NAN.to_bits());
+        let values = device.upload(bytemuck::cast_slice(&data)).unwrap();
+        drop(data);
+        let mut queries = vec![0.; batch * qh * dim];
+        for query in queries.chunks_exact_mut(dim) {
+            query[0] = (dim as f32).sqrt();
+        }
+        let query = upload(&mut device, &queries);
+        let new_keys = upload(&mut device, &vec![0.; batch * kh * dim]);
+        let new_values = upload(&mut device, &vec![0.75; batch * kh * dim]);
+        let rel = upload(&mut device, &vec![0.; batch * qh]);
+        let profiles = upload(&mut device, &[0.]);
+        let sinks = upload(&mut device, &vec![0.; batch * qh]);
+        let gate = upload(&mut device, &vec![0.; batch * qh * dim]);
+        let parts = capacity.div_ceil(128);
+        let partials = device.allocate(batch * qh * parts * (dim + 2) * 4).unwrap();
+        let output = device.allocate(batch * qh * dim * 4).unwrap();
+        let geometry = Params::new(
+            &[
+                qh, kh, dim, position, capacity, capacity, 1, 1, parts, batch, 1,
+            ],
+            &[],
+        );
+        // SAFETY: full released-model geometry with FP16 KV buffers, FP32 fresh
+        // rows and a 780 MiB partition workspace. Relative bias is identically zero.
         unsafe {
             kernels
                 .run(
                     &mut device,
-                    name,
+                    "attention_partition",
                     &[
-                        buffer,
+                        &partials,
                         &query,
                         &keys,
                         &values,
@@ -1756,17 +1709,133 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
                         &rel,
                         &profiles,
                     ],
-                    decode_geometry,
-                    qh * parts * threads,
-                    threads,
+                    geometry,
+                    batch * qh * parts * 128,
+                    128,
+                )
+                .unwrap();
+            kernels
+                .run(
+                    &mut device,
+                    "attention_finish",
+                    &[&output, &partials, &sinks, &gate],
+                    geometry,
+                    batch * qh * 32,
+                    32,
                 )
                 .unwrap();
         }
+        let mut expected = Vec::with_capacity(batch * qh * dim);
+        for token in 0..batch {
+            let n = position + token + 1;
+            // The first cached key scores 20; every other key and the sink score 0.
+            // Summing these weights analytically avoids a second huge attention matrix.
+            let first_weight = 20f64.exp();
+            let denominator = first_weight + n as f64;
+            for head in 0..qh {
+                for channel in 0..dim {
+                    let numerator = first_weight
+                        * f64::from(first_value(head / (qh / kh), channel))
+                        + (position - 1) as f64 * 0.25
+                        + (token + 1) as f64 * 0.75;
+                    expected.push((0.5 * numerator / denominator) as f32);
+                }
+            }
+        }
+        let reference_output = read(&mut device, &output);
+        close(&reference_output, &expected, 0.00001);
+        // SAFETY: the production prefill kernel has the identical ABI and buffers.
+        unsafe {
+            kernels
+                .run(
+                    &mut device,
+                    "attention_partition_prefetch",
+                    &[
+                        &partials,
+                        &query,
+                        &keys,
+                        &values,
+                        &new_keys,
+                        &new_values,
+                        &rel,
+                        &profiles,
+                    ],
+                    geometry,
+                    batch * qh * parts * 256,
+                    256,
+                )
+                .unwrap();
+            kernels
+                .run(
+                    &mut device,
+                    "attention_finish",
+                    &[&output, &partials, &sinks, &gate],
+                    geometry,
+                    batch * qh * 32,
+                    32,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&read(&mut device, &output)),
+            bytemuck::cast_slice::<_, u8>(&reference_output)
+        );
+
+        // Also compare the decode path at the released model's full cache geometry.
+        // Only the first fresh token is visible; unwritten later slots contain NaNs.
+        let length = qh * parts * (dim + 2);
+        let initial = vec![f32::NAN; length + 17];
+        let reference = upload(&mut device, &initial);
+        let candidate = upload(&mut device, &initial);
+        let decode_geometry = Params::new(
+            &[
+                qh,
+                kh,
+                dim,
+                position,
+                capacity,
+                position + 1,
+                1,
+                1,
+                parts,
+                1,
+                1,
+            ],
+            &[],
+        );
+        for (name, buffer, threads) in [
+            ("attention_partition", &reference, 128),
+            ("attention_partition_prefetch", &candidate, 256),
+        ] {
+            // SAFETY: the same native caches and first fresh token serve both kernels;
+            // each output has one token's partitions plus unwritten sentinel guards.
+            unsafe {
+                kernels
+                    .run(
+                        &mut device,
+                        name,
+                        &[
+                            buffer,
+                            &query,
+                            &keys,
+                            &values,
+                            &new_keys,
+                            &new_values,
+                            &rel,
+                            &profiles,
+                        ],
+                        decode_geometry,
+                        qh * parts * threads,
+                        threads,
+                    )
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            device.read(&candidate).unwrap(),
+            device.read(&reference).unwrap()
+        );
     }
-    assert_eq!(
-        device.read(&candidate).unwrap(),
-        device.read(&reference).unwrap()
-    );
 }
 
 #[test]
@@ -1823,7 +1892,7 @@ fn projection_scheduling_preserves_every_output_bit() {
                     )
                     .unwrap(),
             };
-            for batch in [1usize, 2, 7, 8, 15, 16, 17, 31, 32, 33] {
+            for batch in [1usize, 2, 7, 8, 15, 16, 17, 31, 32, 33, 64, 128] {
                 let offsets: &[usize] = if batch == 1 { &[0, 12] } else { &[0, 1, 3, 12] };
                 for &offset in offsets {
                     let input = upload(&mut d, &values(offset + batch * cols, 37));

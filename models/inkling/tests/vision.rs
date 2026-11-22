@@ -244,6 +244,57 @@ mod gpu {
 
     #[test]
     #[ignore = "requires a Metal GPU"]
+    fn larger_image_batches_preserve_placeholder_boundaries_and_history() {
+        let temporary =
+            std::env::temp_dir().join(format!("rink-image-batches-{}", std::process::id()));
+        std::fs::create_dir_all(&temporary).unwrap();
+        let mut config = rink_inkling::Config::load(fixture().join("config.json")).unwrap();
+        config.text_config.model_max_length = 1024;
+        std::fs::write(
+            temporary.join("config.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        std::fs::copy(
+            fixture().join("model.safetensors"),
+            temporary.join("model.safetensors"),
+        )
+        .unwrap();
+        let image = Image::open(fixture().join("input.png")).unwrap();
+        let prompt = |prefix| {
+            let mut tokens = vec![1; prefix];
+            tokens.extend(vec![config.image_token_id; image.token_count()]);
+            tokens.extend(vec![2; 35]);
+            tokens
+        };
+        for precision in [KvCachePrecision::F16, KvCachePrecision::F32] {
+            let mut model =
+                Inkling::load_with_kv_cache(Metal::new().unwrap(), &temporary, 1024, precision)
+                    .unwrap();
+            let mut expected = None;
+            for limit in [32, 64, 128] {
+                model.set_prefill_batch_limit(limit).unwrap();
+                model.reset().unwrap();
+                let mut actual = Vec::new();
+                for prefix in [127, 63] {
+                    actual.extend(model.prefill_image(&prompt(prefix), &image).unwrap());
+                    for token in [4, 5, 6] {
+                        actual.extend(model.step(token).unwrap());
+                    }
+                }
+                let bits: Vec<_> = actual.iter().map(|v| v.to_bits()).collect();
+                if let Some(expected) = &expected {
+                    assert_eq!(&bits, expected, "batch={limit}, kv={precision}");
+                } else {
+                    expected = Some(bits);
+                }
+            }
+        }
+        std::fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a Metal GPU"]
     fn progress_preserves_results_and_gpu_work() {
         use PrefillProgress::*;
         let work = |model: &Inkling<Metal>| {
@@ -463,26 +514,31 @@ mod gpu {
                 // bound of 4e-5 for input values up to about 3.
                 close(&actual[..length], &expected, 0.00004);
                 if dim == 64 {
-                    // SAFETY: the native specialization uses the same buffers,
-                    // with eight SIMD groups and exactly 64 channels per head.
-                    unsafe {
-                        kernels
-                            .run(
-                                &mut d,
-                                "vision_attention_64x16",
-                                &[&out, &qb, &kb, &vb],
-                                Params::new(&[n, heads, dim], &[]),
-                                n.div_ceil(16) * heads * 256,
-                                256,
-                            )
-                            .unwrap();
+                    for (name, tile) in [
+                        ("vision_attention_64x16", 16),
+                        ("vision_attention_64x32", 32),
+                    ] {
+                        // SAFETY: the native specialization uses the same buffers,
+                        // with eight SIMD groups and exactly 64 channels per head.
+                        unsafe {
+                            kernels
+                                .run(
+                                    &mut d,
+                                    name,
+                                    &[&out, &qb, &kb, &vb],
+                                    Params::new(&[n, heads, dim], &[]),
+                                    n.div_ceil(tile) * heads * 256,
+                                    256,
+                                )
+                                .unwrap();
+                        }
+                        let candidate = floats(&d.read(&out).unwrap());
+                        assert!(candidate[length..].iter().all(|v| v.is_nan()));
+                        assert_eq!(
+                            bytemuck::cast_slice::<_, u8>(&candidate[..length]),
+                            bytemuck::cast_slice::<_, u8>(&actual[..length])
+                        );
                     }
-                    let candidate = floats(&d.read(&out).unwrap());
-                    assert!(candidate[length..].iter().all(|v| v.is_nan()));
-                    assert_eq!(
-                        bytemuck::cast_slice::<_, u8>(&candidate[..length]),
-                        bytemuck::cast_slice::<_, u8>(&actual[..length])
-                    );
                 }
             }
         }

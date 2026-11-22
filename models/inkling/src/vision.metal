@@ -133,3 +133,43 @@ kernel void vision_attention_64x16(device float* y [[buffer(0)]], device const f
     }
     for(uint j=0;j<4;j++){uint i=tid+j*256,row=i/64;if(first+row<n)y[(first+row)*stride+head*64+i%64]=accum[j]/den[row];}
 }
+
+// Four independent 8-query tiles share each 32-key load. The key staging,
+// FP32 matrix operations and softmax order match the 16-query kernel.
+// Eight output values per thread stay in registers; shared storage is 28.4 KiB.
+kernel void vision_attention_64x32(device float* y [[buffer(0)]], device const float* q [[buffer(1)]], device const float* k [[buffer(2)]], device const float* v [[buffer(3)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float queries[2048],stage[2048],scores[1024],tile[2048],mx[32],den[32],scale[32];
+    uint n=p.u[0],heads=p.u[1],head=group%heads,first=(group/heads)*32,stride=heads*64,sg=tid/32,part=sg%4;if(first>=n)return;
+    float accum[8]={0.f};
+    for(uint i=tid;i<2048;i+=256){uint row=i/64,c=i%64;queries[i]=first+row<n?q[(first+row)*stride+head*64+c]:0.f;}
+    if(tid<32){mx[tid]=-INFINITY;den[tid]=0;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint base=0;base<n;base+=32){
+        for(uint i=tid;i<2048;i+=256){uint c=i/32,t=i%32;stage[i]=base+t<n?k[(base+t)*stride+head*64+c]:0.f;}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for(uint qr=(sg/4)*8;qr<32;qr+=16){
+            simdgroup_float8x8 sum=make_filled_simdgroup_matrix<float,8,8>(0.f);
+            for(uint c=0;c<64;c+=8){simdgroup_float8x8 a,b;simdgroup_load(a,queries+qr*64+c,64);simdgroup_load(b,stage+c*32+part*8,32);simdgroup_multiply_accumulate(sum,a,b,sum);}
+            simdgroup_store(sum,scores+qr*32+part*8,32);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for(uint row=sg;row<32;row+=8){
+            float logit=base+lane<n?scores[row*32+lane]*rsqrt(64.f):-INFINITY;
+            float peak=max(mx[row],simd_max(logit)),prob=exp(logit-peak),old_scale=exp(mx[row]-peak);
+            float total=den[row]*old_scale+simd_sum(prob);
+            scores[row*32+lane]=prob;
+            if(lane==0){mx[row]=peak;den[row]=total;scale[row]=old_scale;}
+        }
+        for(uint i=tid;i<2048;i+=256){uint t=i/64,c=i%64;stage[i]=base+t<n?v[(base+t)*stride+head*64+c]:0.f;}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for(uint qr=(sg/4)*8;qr<32;qr+=16) for(uint c=part*8;c<64;c+=32){
+            simdgroup_float8x8 product=make_filled_simdgroup_matrix<float,8,8>(0.f);
+            for(uint t=0;t<32;t+=8){simdgroup_float8x8 a,b;simdgroup_load(a,scores+qr*32+t,32);simdgroup_load(b,stage+t*64+c,64);simdgroup_multiply_accumulate(product,a,b,product);}
+            simdgroup_store(product,tile+qr*64+c,64);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for(uint j=0;j<8;j++){uint i=tid+j*256;accum[j]=accum[j]*scale[i/64]+tile[i];}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for(uint j=0;j<8;j++){uint i=tid+j*256,row=i/64;if(first+row<n)y[(first+row)*stride+head*64+i%64]=accum[j]/den[row];}
+}

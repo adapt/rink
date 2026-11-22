@@ -219,7 +219,11 @@ impl<A: Accelerator> VisionEncoder<A> {
             )?;
             let (attention_kernel, attention_threads, query_tile) =
                 if h / c.num_attention_heads == 64 {
-                    ("vision_attention_64x16", 256, 16)
+                    if seq >= 32768 {
+                        ("vision_attention_64x32", 256, 32)
+                    } else {
+                        ("vision_attention_64x16", 256, 16)
+                    }
                 } else {
                     ("vision_attention", 32, 8)
                 };
