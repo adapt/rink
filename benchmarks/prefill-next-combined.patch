@@ -1,0 +1,96 @@
+--- a/models/inkling/src/kernels.rs
++++ b/models/inkling/src/kernels.rs
+@@ -9,7 +9,11 @@
+     metal: Some(concat!(
+         include_str!("kernels.metal"),
+         "\n",
+-        include_str!("vision.metal")
++        include_str!("vision.metal"),
++        "\n",
++        include_str!("../examples/prefill_tiling.metal"),
++        "\n",
++        include_str!("../examples/prefill_attention.metal")
+     )),
+     cuda: None,
+     subgroup_size: Some(32),
+@@ -39,6 +43,10 @@
+     pub fn compile(device: &mut A) -> Result<Self> {
+         let mut entries = HashMap::new();
+         for name in [
++            "dense_32_64_32",
++            "dense_64_64_32",
++            "expert_64_64_32",
++            "attention_q4h3",
+             "vision_positions",
+             "vision_norm",
+             "vision_bias",
+--- a/models/inkling/src/model.rs
++++ b/models/inkling/src/model.rs
+@@ -376,6 +376,24 @@
+         // Keep the original scalar/packed boundary: their reduction orders differ.
+         // Scheduling changes must not switch a scalar projection to packed dots.
+         let vectorized = cols % 4 == 0 && rows >= 128;
++        if self.batch >= 512 && rows >= 384 && offset == 0 {
++            let tile = if rows < 1024 { 32usize } else { 64usize };
++            self.run(
++                if tile == 32 {
++                    "dense_32_64_32"
++                } else {
++                    "dense_64_64_32"
++                },
++                &[
++                    &y, &w.buffer, &w.buffer, &w.buffer, x, &w.buffer, &w.buffer, &w.buffer,
++                ],
++                &[rows, cols, 1, w.dtype, 0, self.batch],
++                &[],
++                rows.div_ceil(64) * self.batch.div_ceil(tile) * 256,
++                256,
++            )?;
++            return Ok(y);
++        }
+         if self.batch > 1 {
+             // Four-wide staging preserves each 8x8 accumulator's original
+             // operation order, including short and partially filled tiles.
+@@ -795,6 +813,8 @@
+         let (partition_kernel, partition_threads, query_tile, partition_heads) =
+             if local && d == 128 && qh == 3 * kh && self.batch >= 4 {
+                 ("attention_partition_heads3", 256, 1, kh)
++            } else if !local && d == 128 && qh == 3 * kh && self.batch >= 4 && parts >= 8 {
++                ("attention_q4h3", 256, 4, kh)
+             } else if !local && d == 128 && self.batch >= 4 && parts >= 8 {
+                 ("attention_partition_queries4", 256, 4, qh)
+             } else if self.batch == 1 && parts <= 2 {
+@@ -881,9 +901,11 @@
+         if let Some(groups) = groups {
+             // NVFP4 tables are already resident for decode. Reuse the same
+             // exact values in prefill without allocating another workspace.
+-            let threads = if groups.tile_size == 32 { 256 } else { 128 };
++            let threads = if groups.tile_size >= 32 { 256 } else { 128 };
+             self.run(
+-                if groups.tile_size == 32 {
++                if groups.tile_size == 64 {
++                    "expert_64_64_32"
++                } else if groups.tile_size == 32 {
+                     "expert_matmul_m32k32"
+                 } else if format == 0 {
+                     "expert_matmul_nvfp4"
+@@ -902,7 +924,9 @@
+                 ],
+                 &[rows, cols, top, format, usize::from(down), self.batch],
+                 &caps,
+-                rows.div_ceil(32) * groups.max_tiles * threads,
++                rows.div_ceil(if groups.tile_size == 64 { 64 } else { 32 })
++                    * groups.max_tiles
++                    * threads,
+                 threads,
+             )?;
+         } else {
+@@ -955,7 +979,7 @@
+         let count = self.batch * top;
+         // Larger tiles pay off when enough tokens reuse each expert. Keep small
+         // batches on eight-slot tiles to avoid multiplying mostly padding.
+-        let tile_size = if self.batch >= 512 { 32 } else { 8 };
++        let tile_size = if self.batch >= 512 { 64 } else { 8 };
+         // Sum ceil(count_per_expert / tile_size), bounded by total slots plus
+         // at most tile_size - 1 padding slots for each nonempty expert.
+         let max_tiles = (count + (tile_size - 1) * experts.min(count)) / tile_size;
