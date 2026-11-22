@@ -276,5 +276,87 @@ cargo run --release -p rink-inkling --example bench_image -- \
 ```
 
 Use a final argument of `32` or `64` to compare smaller batch limits. The library
-also exposes `set_prefill_batch_limit`; the workspace budget can reduce that
-limit during execution.
+also exposes `set_prefill_batch_limit`. The next change removes the reduction
+of the decoder batch as history grows.
+
+## Fixed decoder batches through 256K
+
+Implementation `c61f973` keeps 128-token batches through the full configured
+context. Only the attention queries are split into smaller groups. Projections, convolutions,
+expert routing and expert matrix products keep the larger batch. Short prompt
+tails retain their previous chunk boundaries and expert kernels.
+
+On the M4 Max, median prefill throughput improves by 17.7% in a 16K-context
+benchmark that crosses both former batch-size thresholds. All three candidate
+runs improve throughput, and their 32 generated tokens match the baseline.
+Peak Metal allocation is identical.
+
+| Measurement | Previous scheduler | Fixed decoder batches |
+| --- | ---: | ---: |
+| Prefill, 16,352 tokens (median of three) | 103.65 s | 88.10 s |
+| Prefill throughput (median) | 157.8 tokens/s | 185.6 tokens/s |
+| Prefill dispatches | 706,567 | 263,233 |
+| Prefill command buffers | 351 | 129 |
+| Peak Metal allocation across trials | 20,041,547,776 bytes | 20,041,547,776 bytes |
+
+[Measurements](m4-max-prefill-query-groups.json) include every trial. Both builds
+use the same repeated text prompt, FP16 KV storage, a 16,384-token capacity and
+32 fixed decode steps. Command-buffer timing is enabled; per-kernel profiling
+is disabled. Prefill excludes loading and warmup, and the first trial includes
+scratch allocation. This is a full-model measurement at 16K, not a throughput
+claim for 256K. Peak Metal allocation does not measure process RSS.
+
+At a 262,144-token capacity, full attention uses this schedule:
+
+| History covered by the batch | Decoder batch | Attention query group |
+| --- | ---: | ---: |
+| Through 65,536 tokens | 128 | 128 |
+| Through 131,072 tokens | 128 | 64 |
+| Through 262,144 tokens | 128 | 32 |
+
+Each group reuses the same 780 MiB partition workspace and writes its own rows
+in the full-batch output. Query offsets do not change the original chunk base:
+every group can read earlier fresh keys and values. The cache write runs only
+after all groups finish, so a local ring cannot overwrite history still needed
+by another group. This adds no copies, device allocations or CPU waits between
+groups. Each query retains its original dot products, softmax, partition order,
+FP32 accumulation and KV rounding.
+
+The complete 256K allocation audit now uses 2,048 batches of 128 tokens, compared
+with 5,632 batches in the preceding schedule. Peak tracked allocation remains
+exactly 28,856,387,244 bytes. The peak stays fixed after the first full batch;
+the final vocabulary projection also stays below it. Audits at capacities of
+128, 4,096, 65,536 and 131,072 tokens pass the same check. These are allocation
+simulations of the actual decoder schedule, not full-context GPU executions or
+process-RSS measurements. [Allocation records](m4-max-prefill-query-groups-memory.json)
+include the previous 256K schedule and all five new capacities.
+
+Native GPU attention tests run all 128 queries at 64K, 128K and 256K histories.
+Each result matches the original unsplit kernel bit for bit and passes an
+independent analytic reference. The test frees the larger reference workspace
+before it runs the candidate with 780 MiB. Other checks cover both KV formats,
+uneven query groups, output guards, local-ring wrapping, relative bias, causal
+masking and compensated reductions at an unaligned 65K position. Text and image
+fixtures compare complete continuations across batch limits of 32, 64 and 128,
+including later turns and image placeholders that cross query-group boundaries.
+
+Full-checkpoint comparisons match all 49,214,268 saved logits bit for bit across
+FP16 and FP32 KV storage. Each precision covers an 8,192-token prompt, code and
+conversation prompts, intermediate checkpoints and 32 continuation steps per
+case. The [measurement record](m4-max-prefill-query-groups.json) lists the checked
+positions and zero-mismatch totals. These full-model checks use a 16K context;
+the 256K checks above cover attention and allocation, not a full-model prompt.
+All 48 workspace tests pass, including the Metal tests, with no tests skipped.
+Formatting and Clippy with warnings denied pass. The release CLI is rebuilt.
+
+To repeat the timing comparison, save the `rink` executable from `21dfc5f`, then
+run the same command with that executable and the new build. Run one GPU job at
+a time:
+
+```sh
+cargo run --release -p rink-cli -- bench --model checkpoints/inkling-2-mini \
+  --context 16384 --prompt-tokens 16352 --decode-tokens 32 --repetitions 3
+cargo run --release -p rink-inkling --example prefill_memory -- \
+  checkpoints/inkling-2-mini 262144 128
+cargo test --release --workspace -- --include-ignored --test-threads=1
+```
