@@ -187,3 +187,94 @@ time. The isolated comparisons require no checkpoint:
 cargo run --release -p rink-inkling --example bench_prefill_kernels -- 41273
 cargo run --release -p rink-inkling --example bench_projections -- --experts-only
 ```
+
+## Larger batches with bounded workspace
+
+Implementation `d46ec68` reduces preparation for the same image from 132.12 to 101.76
+seconds, a 23.0% reduction. The baseline is `e1a89f8` (the implementation measured
+above). Both runs use the same 262,144-token context, FP16 KV cache, effort 0.9,
+image and prompt. The same first token, 32 continuation tokens, and all 6,401,856
+continuation logits match bit for bit.
+
+| Measurement | Previous version | This version |
+| --- | ---: | ---: |
+| Image encoding | 58.01 s | 48.24 s |
+| Prompt prefill, 10,342 tokens | 72.88 s | 52.23 s |
+| Prefill throughput | 141.9 tokens/s | 198.0 tokens/s |
+| Preparation, including image encoder load | 132.12 s | 101.76 s |
+| Peak Metal allocation | 28.19 GiB | 28.19 GiB |
+
+These are single runs with the same timing method and exclusions as above.
+Memory held after the benchmark falls by 422.86 MiB. A 64-token candidate took
+60.73 seconds to prefill and also matched every continuation logit. The default
+is 128 because it was faster and stayed within the previous memory peak.
+[Measurements](m4-max-prefill-batches.json) include both candidates.
+
+Prefill now permits up to 128 tokens per batch. A separate scratch pool reuses
+temporary activations between layers. Layer outputs, residual banks, prelude
+state, and previous-pass messages remain in the outer pool until they are no
+longer needed. The final layer operation writes directly into its outer output;
+reuse adds no copy kernels or CPU waits.
+
+Attention retains the previous 32-token, full-capacity workspace budget. For the
+native model at a 262,144-token capacity, that budget is 780 MiB. The batch size
+falls as history grows:
+
+| History covered by the batch | Maximum batch |
+| --- | ---: |
+| Through 65,536 tokens | 128 tokens |
+| Through 131,072 tokens | 64 tokens |
+| Through 262,144 tokens | 32 tokens |
+
+The scheduler checks the actual attention shapes, available input, and workspace
+size for each chunk. Short tails keep the original 32-token boundary so they use
+the same expert kernels and reductions. Smaller configured contexts use the same
+budget rule. KV precision, context capacity, image resolution, and effort are
+unchanged.
+
+The vision encoder uses a 32-query attention tile for native 64-channel heads at
+sequence lengths of 32,768 or more. Four independent eight-query tiles share each
+32-key load. FP32 operations and softmax reduction order are unchanged. Shared
+threadgroup storage is 28.4 KiB; device buffer sizes do not change. Shorter
+sequences retain the 16-query kernel: the larger tile was slower at 321, 1,025,
+4,097, and 16,385 positions, and approximately tied at 8,193.
+[Kernel comparisons](m4-max-vision-query-tiles.json) include the rejected load
+layouts and the sequence-length sweep. All compared output bytes match.
+
+The `prefill_memory` example runs the decoder's allocation schedule through a
+complete context using buffers that track size and lifetime. It retains pending
+resources until synchronization and rejects growth of the prefill peak after
+the first complete batch. It does not execute GPU math or measure driver memory,
+page rounding, or process RSS. Full-model correctness and actual Metal peak
+allocation are checked separately with `bench_image`.
+
+The native 256K allocation audit keeps its peak unchanged from the first full
+batch to the end of prefill. The full schedule uses 512 batches of 128 tokens,
+1,024 batches of 64 tokens, and 4,096 batches of 32 tokens. The final vocabulary
+projection adds about 1.53 MiB of live buffers and stays below the initial peak.
+This is not a full 256K model execution or a process-RSS measurement.
+[Allocation records](m4-max-prefill-memory.json) include the 32-token control.
+
+All 48 workspace tests pass, including the Metal tests. Native attention at
+64K/128 tokens, 128K/64 tokens, and 256K/32 tokens passes an independent analytic
+reference and an exact comparison with the original kernel. Additional tests
+cover image placeholders crossing batch boundaries, conversation history,
+resets, both KV formats, sparse expert routes, and partial matrix tiles.
+The native text runs match all 49,214,268 logits across
+[FP16](m4-max-prefill-batches-logits-f16.json) and
+[FP32](m4-max-prefill-batches-logits-f32.json) KV caches, including an 8,192-token
+prompt and 32 continuation steps per case. The independent full vision-encoder
+reference passes all 285,696 features from four images with no tolerance
+violations. [Vision reference results](m4-max-prefill-batches-vision.json) retain
+the existing error bounds. Formatting and Clippy with warnings denied pass.
+
+```sh
+cargo run --release -p rink-inkling --example prefill_memory -- \
+  checkpoints/inkling-2-mini 262144 128
+cargo run --release -p rink-inkling --example bench_image -- \
+  compare checkpoints/inkling-2-mini /path/to/image.png /tmp/image-logits.bin 128
+```
+
+Use a final argument of `32` or `64` to compare smaller batch limits. The library
+also exposes `set_prefill_batch_limit`; the workspace budget can reduce that
+limit during execution.

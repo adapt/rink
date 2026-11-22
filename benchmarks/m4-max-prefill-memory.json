@@ -1,0 +1,207 @@
+{
+  "candidate_revision": "d46ec68",
+  "method": "Allocation simulation using the real decoder graph; no GPU math, driver overhead, page rounding or process RSS. Pending command resources retained until synchronization.",
+  "attention_workspace_bytes": 817889280,
+  "batch32_control": {
+    "batch_limit": 32,
+    "batches": {
+      "32": 8192
+    },
+    "checkpoints": [
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 128
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 16384
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 32768
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 49152
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 65536
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 81920
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 98304
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 114688
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 131072
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 147456
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 163840
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 180224
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 196608
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 212992
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 229376
+      },
+      {
+        "live_bytes": 28622920224,
+        "peak_bytes": 28631437356,
+        "position": 245760
+      },
+      {
+        "live_bytes": 28624523048,
+        "peak_bytes": 28631437356,
+        "position": 262144
+      }
+    ],
+    "context": 262144,
+    "kv_cache": "f16",
+    "live_bytes": 28624523048,
+    "loaded_bytes": 27738560544,
+    "method": "allocation simulation; no GPU execution, page rounding or driver overhead",
+    "peak_bytes": 28631437356,
+    "stable_prefill_peak": true
+  },
+  "batch128_default": {
+    "batch_limit": 128,
+    "batches": {
+      "128": 512,
+      "32": 4096,
+      "64": 1024
+    },
+    "checkpoints": [
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 128
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 16384
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 32768
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 49152
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 65536
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 81920
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 98304
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 114688
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 131072
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 147456
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 163840
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 180224
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 196608
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 212992
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 229376
+      },
+      {
+        "live_bytes": 28822329888,
+        "peak_bytes": 28856387244,
+        "position": 245760
+      },
+      {
+        "live_bytes": 28823932712,
+        "peak_bytes": 28856387244,
+        "position": 262144
+      }
+    ],
+    "context": 262144,
+    "kv_cache": "f16",
+    "live_bytes": 28823932712,
+    "loaded_bytes": 27738560544,
+    "method": "allocation simulation; no GPU execution, page rounding or driver overhead",
+    "peak_bytes": 28856387244,
+    "stable_prefill_peak": true
+  }
+}
