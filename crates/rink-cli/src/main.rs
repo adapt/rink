@@ -45,6 +45,9 @@ enum Command {
         /// Diagnostic per-kernel GPU timings; adds compute passes and affects throughput.
         #[arg(long)]
         profile_kernels: bool,
+        /// Report prefill timing windows at existing chunk boundaries (in tokens).
+        #[arg(long)]
+        prefill_window: Option<usize>,
     },
     /// Validate the model configuration and show its physical/virtual layer layout.
     Inspect {
@@ -107,11 +110,13 @@ fn main() -> Result<()> {
             kv_cache,
             reference,
             profile_kernels,
+            prefill_window,
         } => {
             ensure!(
                 repetitions > 0 && decode_tokens > 0,
                 "repetitions and decode tokens must be positive"
             );
+            ensure!(prefill_window != Some(0), "prefill window must be positive");
             ensure!(
                 !prompt_tokens.is_empty()
                     && prompt_tokens
@@ -131,11 +136,12 @@ fn main() -> Result<()> {
                     kv_cache,
                     reference,
                     profile_kernels,
+                    prefill_window,
                 })
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (model, kv_cache, reference, profile_kernels);
+                let _ = (model, kv_cache, reference, profile_kernels, prefill_window);
                 anyhow::bail!("benchmark requires macOS with Metal")
             }
         }
