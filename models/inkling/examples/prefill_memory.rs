@@ -109,11 +109,14 @@ fn main() -> Result<()> {
         .map(|s| s.parse())
         .transpose()?
         .unwrap_or(262144);
-    let limit = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(128);
+    let limit = args.get(3).map(|s| s.parse()).transpose()?;
     let device = Allocator::default();
     let stats = device.stats.clone();
     let mut model = Inkling::load(device, Path::new(&args[1]), capacity)?;
-    model.set_prefill_batch_limit(limit)?;
+    if let Some(limit) = limit {
+        model.set_prefill_batch_limit(limit)?;
+    }
+    let limit = model.prefill_batch_limit();
     let loaded = stats.borrow().live;
     let mut checkpoints = Vec::new();
     let mut sizes = std::collections::BTreeMap::<usize, usize>::new();

@@ -1633,20 +1633,21 @@ fn batched_prefill_matches_token_steps_across_chunk_boundaries() {
     }
     // Larger batches must preserve the complete continuation, including loop
     // messages, convolution state and a partial final chunk, in both KV formats.
-    config["text_config"]["model_max_length"] = 768.into();
+    config["text_config"]["model_max_length"] = 12288.into();
     std::fs::write(
         temporary.join("config.json"),
         serde_json::to_vec(&config).unwrap(),
     )
     .unwrap();
-    // Reach the 64- and 32-query workspace limits while the decoder retains
-    // 128-token batches. Include a second prompt with an unaligned cache base.
-    let tokens: Vec<u32> = (0..641).map(|i| (i * 7 % 14) as u32).collect();
+    // Cross attention query groups with decoder batches up to 4096 tokens.
+    // Include a second prompt with an unaligned cache base and a short tail.
+    let tokens: Vec<u32> = (0..10497).map(|i| (i * 7 % 14) as u32).collect();
     for precision in [KvCachePrecision::F16, KvCachePrecision::F32] {
         let mut model =
-            Inkling::load_with_kv_cache(Metal::new().unwrap(), &temporary, 768, precision).unwrap();
+            Inkling::load_with_kv_cache(Metal::new().unwrap(), &temporary, 12288, precision)
+                .unwrap();
         let mut expected = None;
-        for limit in [32, 64, 128] {
+        for limit in [32, 64, 128, 256, 512, 1024, 2048, 4096] {
             model.set_prefill_batch_limit(limit).unwrap();
             model.reset().unwrap();
             let mut actual = vec![model.prefill(&tokens[..257]).unwrap()];
@@ -1657,6 +1658,42 @@ fn batched_prefill_matches_token_steps_across_chunk_boundaries() {
             let bits: Vec<_> = actual.iter().flatten().map(|v| v.to_bits()).collect();
             if let Some(expected) = &expected {
                 assert_eq!(&bits, expected, "batch={limit}, kv={precision}");
+            } else {
+                expected = Some(bits);
+            }
+        }
+    }
+    // More than 128 attention partitions enables compensated reductions.
+    // Different decoder batches must still agree across that boundary, even
+    // when the larger batch has more empty trailing partitions for early queries.
+    config["text_config"]["model_max_length"] = 32768.into();
+    std::fs::write(
+        temporary.join("config.json"),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
+    let prefix: Vec<u32> = (0..16385).map(|i| (i * 7 % 14) as u32).collect();
+    let tail: Vec<u32> = (0..8193).map(|i| (i * 11 % 14) as u32).collect();
+    for precision in [KvCachePrecision::F16, KvCachePrecision::F32] {
+        let mut model =
+            Inkling::load_with_kv_cache(Metal::new().unwrap(), &temporary, 32768, precision)
+                .unwrap();
+        let mut expected = None;
+        for limit in [32, 1024, 4096] {
+            model.reset().unwrap();
+            model.set_prefill_batch_limit(4096).unwrap();
+            model.prefill(&prefix).unwrap();
+            model.set_prefill_batch_limit(limit).unwrap();
+            let mut logits = model.prefill(&tail).unwrap();
+            for token in [3, 4, 5] {
+                logits.extend(model.step(token).unwrap());
+            }
+            let bits: Vec<_> = logits.iter().map(|v| v.to_bits()).collect();
+            if let Some(expected) = &expected {
+                assert_eq!(
+                    &bits, expected,
+                    "long history batch={limit}, kv={precision}"
+                );
             } else {
                 expected = Some(bits);
             }
@@ -1851,7 +1888,7 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
                 kernels
                     .run(
                         &mut device,
-                        "attention_partition_prefetch",
+                        "attention_partition_queries4",
                         &[
                             &partials,
                             &query,
@@ -1863,18 +1900,18 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
                             &profiles,
                         ],
                         p,
-                        query_group * qh * parts * 256,
+                        query_group.div_ceil(4) * qh * parts * 256,
                         256,
                     )
                     .unwrap();
                 kernels
                     .run(
                         &mut device,
-                        "attention_finish",
+                        "attention_finish_cached",
                         &[&output, &partials, &sinks, &gate],
                         p,
-                        query_group * qh * 32,
-                        32,
+                        query_group * qh * 128,
+                        128,
                     )
                     .unwrap();
             }
@@ -1938,6 +1975,161 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
             device.read(&candidate).unwrap(),
             device.read(&reference).unwrap()
         );
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn shared_query_attention_preserves_partials_and_group_tails() {
+    let mut device = Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut device).unwrap();
+    let (qh, kh, dim, rel_dim, extent) = (6, 2, 128, 17, 1024);
+    for fp16 in [false, true] {
+        for (position, batch) in [
+            (0usize, 7usize),
+            (31, 5),
+            (126, 7),
+            (1023, 5),
+            (65537, 7),
+            (262013, 7),
+        ] {
+            let capacity = position + batch + 3;
+            let vals = |n: usize, phase: usize| -> Vec<f32> {
+                (0..n)
+                    .map(|i| (((i * 17 + phase) % 113) as f32 - 56.) / 113.)
+                    .collect()
+            };
+            let mut cache = vals(capacity * kh * dim, 1);
+            cache[position * kh * dim..].fill(f32::NAN);
+            let keys = upload_cache(&mut device, &cache, fp16);
+            for v in &mut cache[..position * kh * dim] {
+                *v *= -0.7;
+            }
+            let values = upload_cache(&mut device, &cache, fp16);
+            drop(cache);
+            let q = upload(&mut device, &vals(batch * qh * dim, 13));
+            let fresh_k = upload(&mut device, &vals(batch * kh * dim, 29));
+            let fresh_v = upload(&mut device, &vals(batch * kh * dim, 31));
+            let rel = upload(&mut device, &vals(batch * qh * rel_dim, 37));
+            let profiles = upload(&mut device, &vals(rel_dim * extent, 41));
+            let parts = (position + batch).div_ceil(128);
+            let stride = qh * parts * (dim + 2);
+            let reference = device.allocate(batch * stride * 4).unwrap();
+            let geometry = Params::new(
+                &[
+                    qh,
+                    kh,
+                    dim,
+                    position,
+                    capacity,
+                    position + batch,
+                    rel_dim,
+                    extent,
+                    parts,
+                    batch,
+                    usize::from(fp16),
+                ],
+                &[],
+            );
+            // SAFETY: full attention before capacity, complete cache and fresh rows.
+            unsafe {
+                kernels
+                    .run(
+                        &mut device,
+                        "attention_partition_prefetch",
+                        &[
+                            &reference, &q, &keys, &values, &fresh_k, &fresh_v, &rel, &profiles,
+                        ],
+                        geometry,
+                        batch * qh * parts * 256,
+                        256,
+                    )
+                    .unwrap();
+            }
+            let expected = device.read(&reference).unwrap();
+            let sinks = upload(&mut device, &vals(batch * qh, 43));
+            let gate = upload(&mut device, &vals(batch * qh * dim, 47));
+            let reference_output = device.allocate(batch * qh * dim * 4).unwrap();
+            // SAFETY: reference partials and complete sink/gate/output arrays.
+            unsafe {
+                kernels
+                    .run(
+                        &mut device,
+                        "attention_finish",
+                        &[&reference_output, &reference, &sinks, &gate],
+                        geometry,
+                        batch * qh * 32,
+                        32,
+                    )
+                    .unwrap();
+            }
+            let expected_output = device.read(&reference_output).unwrap();
+            let (name, threads) = ("attention_partition_queries4", 256);
+            for group in [1usize, 3, 4, 7] {
+                let output = upload(&mut device, &vec![f32::NAN; batch * qh * dim + 17]);
+                for offset in (0..batch).step_by(group) {
+                    let count = group.min(batch - offset);
+                    let length = count * stride;
+                    let candidate = upload(&mut device, &vec![f32::NAN; length + 17]);
+                    let mut p = geometry;
+                    p.u[9] = count as u32;
+                    p.u[11] = offset as u32;
+                    // SAFETY: 128-wide heads, full non-ring history, query groups
+                    // retain their original fresh-KV base and fit the partial buffer.
+                    unsafe {
+                        kernels
+                            .run(
+                                &mut device,
+                                name,
+                                &[
+                                    &candidate, &q, &keys, &values, &fresh_k, &fresh_v, &rel,
+                                    &profiles,
+                                ],
+                                p,
+                                count.div_ceil(4) * qh * parts * threads,
+                                threads,
+                            )
+                            .unwrap();
+                        kernels
+                            .run(
+                                &mut device,
+                                "attention_finish_cached",
+                                &[&output, &candidate, &sinks, &gate],
+                                p,
+                                count * qh * 128,
+                                128,
+                            )
+                            .unwrap();
+                    }
+                    let actual = device.read(&candidate).unwrap();
+                    let expected = &expected[offset * stride * 4..(offset + count) * stride * 4];
+                    let mismatch = actual[..length * 4]
+                        .chunks_exact(4)
+                        .zip(expected.chunks_exact(4))
+                        .position(|(a, b)| a != b);
+                    assert_eq!(
+                        mismatch, None,
+                        "{name}: fp16={fp16} position={position} group={group} offset={offset}"
+                    );
+                    assert!(
+                        actual[length * 4..]
+                            .chunks_exact(4)
+                            .all(|b| b == f32::NAN.to_le_bytes())
+                    );
+                }
+                let actual = device.read(&output).unwrap();
+                assert_eq!(
+                    &actual[..expected_output.len()],
+                    &expected_output,
+                    "finish fp16={fp16} position={position} group={group}"
+                );
+                assert!(
+                    actual[expected_output.len()..]
+                        .chunks_exact(4)
+                        .all(|b| b == f32::NAN.to_le_bytes())
+                );
+            }
+        }
     }
 }
 

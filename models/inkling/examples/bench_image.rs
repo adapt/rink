@@ -1,5 +1,5 @@
 //! Fixed-work image benchmark and exact continuation-logit regression check.
-//! bench_image record|compare MODEL IMAGE SNAPSHOT [profile] [32|64|128]
+//! bench_image record|compare MODEL IMAGE SNAPSHOT [profile] [BATCH_LIMIT]
 //! Snapshots contain private image-derived data; keep them outside the repository.
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
@@ -12,7 +12,7 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args().collect();
     ensure!(
         (5..=7).contains(&args.len()),
-        "usage: bench_image record|compare MODEL IMAGE SNAPSHOT [profile] [32|64|128]"
+        "usage: bench_image record|compare MODEL IMAGE SNAPSHOT [profile] [BATCH_LIMIT]"
     );
     let record = match args[1].as_str() {
         "record" => true,
@@ -30,7 +30,6 @@ fn main() -> anyhow::Result<()> {
             batch_limit = Some(option.parse::<usize>()?);
         }
     }
-    let batch_limit = batch_limit.unwrap_or(128);
     let directory = Path::new(&args[2]);
     let image = Image::open(&args[3])?;
     let tokenizer = tokenizers::Tokenizer::from_file(directory.join("tokenizer.json"))
@@ -48,6 +47,7 @@ fn main() -> anyhow::Result<()> {
         encoded.len()
     );
     let mut model = Inkling::load_with_kv_cache(device, directory, 262144, KvCachePrecision::F16)?;
+    let batch_limit = batch_limit.unwrap_or(model.prefill_batch_limit());
     model.set_prefill_batch_limit(batch_limit)?;
     model.accelerator_mut().reset_stats();
     let start = Instant::now();

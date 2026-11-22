@@ -249,7 +249,7 @@ mod gpu {
             std::env::temp_dir().join(format!("rink-image-batches-{}", std::process::id()));
         std::fs::create_dir_all(&temporary).unwrap();
         let mut config = rink_inkling::Config::load(fixture().join("config.json")).unwrap();
-        config.text_config.model_max_length = 1024;
+        config.text_config.model_max_length = 16384;
         std::fs::write(
             temporary.join("config.json"),
             serde_json::to_vec(&config).unwrap(),
@@ -269,16 +269,16 @@ mod gpu {
         };
         for precision in [KvCachePrecision::F16, KvCachePrecision::F32] {
             let mut model =
-                Inkling::load_with_kv_cache(Metal::new().unwrap(), &temporary, 1024, precision)
+                Inkling::load_with_kv_cache(Metal::new().unwrap(), &temporary, 16384, precision)
                     .unwrap();
             let mut expected = None;
-            for limit in [32, 64, 128] {
+            for limit in [32, 64, 128, 256, 512, 1024, 2048, 4096] {
                 model.set_prefill_batch_limit(limit).unwrap();
                 model.reset().unwrap();
                 let mut actual = Vec::new();
                 // Image placeholders cross both decoder chunks and attention
                 // query groups, including the smaller groups near capacity.
-                for prefix in [127, 383, 191] {
+                for prefix in [4095, 5503, 2815] {
                     actual.extend(model.prefill_image(&prompt(prefix), &image).unwrap());
                     for token in [4, 5, 6] {
                         actual.extend(model.step(token).unwrap());

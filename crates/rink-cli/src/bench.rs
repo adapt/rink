@@ -82,6 +82,7 @@ pub struct Options {
     pub reference: bool,
     pub profile_kernels: bool,
     pub prefill_window: Option<usize>,
+    pub prefill_batch: Option<usize>,
 }
 
 pub fn run(options: Options) -> Result<()> {
@@ -95,6 +96,7 @@ pub fn run(options: Options) -> Result<()> {
         reference,
         profile_kernels,
         prefill_window,
+        prefill_batch,
     } = options;
     let tokenizer = tokenizers::Tokenizer::from_file(directory.join("tokenizer.json"))
         .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
@@ -115,6 +117,9 @@ pub fn run(options: Options) -> Result<()> {
     }
     let start = Instant::now();
     let mut model = Inkling::load_with_kv_cache(device, &directory, context, kv_cache)?;
+    if let Some(limit) = prefill_batch {
+        model.set_prefill_batch_limit(limit)?;
+    }
     let load_seconds = start.elapsed().as_secs_f64();
     let load = phase(load_seconds, 0, model.accelerator());
     // Warm the GPU and runtime separately from measured trials. Each trial starts
@@ -204,6 +209,7 @@ pub fn run(options: Options) -> Result<()> {
             "recommended_memory_bytes": model.accelerator().recommended_memory(),
             "profile_kernels": profile_kernels,
             "prefill_window": prefill_window,
+            "prefill_batch": model.prefill_batch_limit(),
             "load": load, "trials": trials,
         }))?
     );

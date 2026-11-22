@@ -228,7 +228,7 @@ impl<A: Accelerator> Inkling<A> {
             layer_scratch: Vec::new(),
             layer_scratch_cursor: 0,
             in_layer: false,
-            prefill_batch_limit: 128,
+            prefill_batch_limit: 2048,
             batch: 1,
         };
         model.reset()?;
@@ -247,16 +247,20 @@ impl<A: Accelerator> Inkling<A> {
         &mut self.device
     }
 
-    /// Set the maximum prompt batch (32, 64 or 128 tokens). Only attention query
+    /// Set the maximum prompt batch (a power of two from 32 through 4096). Attention query
     /// groups shrink with history to stay within the fixed workspace budget.
     /// Resolution, precision and context capacity are unaffected.
     pub fn set_prefill_batch_limit(&mut self, tokens: usize) -> Result<()> {
         ensure!(
-            [32, 64, 128].contains(&tokens),
-            "prefill batch limit must be 32, 64 or 128"
+            (32..=4096).contains(&tokens) && tokens.is_power_of_two(),
+            "prefill batch limit must be a power of two from 32 through 4096"
         );
         self.prefill_batch_limit = tokens;
         Ok(())
+    }
+
+    pub fn prefill_batch_limit(&self) -> usize {
+        self.prefill_batch_limit
     }
 
     fn alloc(&mut self, n: usize) -> Result<A::Buffer> {
@@ -771,10 +775,18 @@ impl<A: Accelerator> Inkling<A> {
         // More score groups hide latency on small decode grids. Both larger
         // decode grids and prompt batches benefit from ordered value prefetch.
         // All paths retain the same dot products, softmax and partition sums.
-        let (partition_kernel, partition_threads) = if self.batch == 1 && parts <= 2 {
-            ("attention_partition_wide", 512)
+        let (partition_kernel, partition_threads, query_tile) =
+            if !local && d == 128 && self.batch >= 4 && parts >= 8 {
+                ("attention_partition_queries4", 256, 4)
+            } else if self.batch == 1 && parts <= 2 {
+                ("attention_partition_wide", 512, 1)
+            } else {
+                ("attention_partition_prefetch", 256, 1)
+            };
+        let (finish_kernel, finish_threads) = if self.batch > 1 && (129..=2048).contains(&parts) {
+            ("attention_finish_cached", 128)
         } else {
-            ("attention_partition_prefetch", 256)
+            ("attention_finish", 32)
         };
         let gated = self.alloc(self.batch * qh * d)?;
         for offset in (0..self.batch).step_by(query_batch) {
@@ -786,16 +798,16 @@ impl<A: Accelerator> Inkling<A> {
                 &[&partials, &q, &keys, &values, &k, &v, &r, &profiles],
                 &geometry,
                 &[],
-                count * qh * parts * partition_threads,
+                count.div_ceil(query_tile) * qh * parts * partition_threads,
                 partition_threads,
             )?;
             self.run(
-                "attention_finish",
+                finish_kernel,
                 &[&gated, &partials, &sink, &gate],
                 &geometry,
                 &[],
-                count * qh * 32,
-                32,
+                count * qh * finish_threads,
+                finish_threads,
             )?;
         }
         // All groups must consume the original ring before any fresh KV is
@@ -1803,7 +1815,7 @@ mod workspace_tests {
         let c = &config.text_config;
         for capacity in [128, 4096, 65536, 131072, 262144] {
             let budget = attention_elements(c, capacity, capacity, 32);
-            for limit in [32, 64, 128] {
+            for limit in [32, 64, 128, 256, 512, 1024, 2048, 4096] {
                 for start in [0, 1, capacity / 2 - 1, capacity - 33] {
                     let mut position = start;
                     while position < capacity {

@@ -1,5 +1,6 @@
 //! Check full-vocabulary logits against another build on identical token histories.
-//! compare_revisions record|compare MODEL_DIR SNAPSHOT_JSON [f16|f32] [PROMPT_TOKENS]
+//! compare_revisions record MODEL_DIR SNAPSHOT_JSON [f16|f32] [PROMPT_TOKENS]
+//! compare_revisions compare MODEL_DIR SNAPSHOT_JSON [BATCH_LIMIT]
 //! Record with the baseline executable, then compare with the candidate executable.
 //! Snapshots store float bits, not decimal floats, and can exceed 100 MB.
 #[cfg(target_os = "macos")]
@@ -106,8 +107,8 @@ mod comparison {
             _ => anyhow::bail!("expected record or compare"),
         };
         ensure!(
-            record || args.len() == 4,
-            "compare reads precision and prompts from the snapshot"
+            record || args.len() <= 5,
+            "compare reads precision and prompts from the snapshot; optional argument is BATCH_LIMIT"
         );
         let directory = Path::new(&args[2]);
         let mut snapshot = if record {
@@ -150,6 +151,9 @@ mod comparison {
             snapshot.context,
             snapshot.kv_cache.parse()?,
         )?;
+        if !record && let Some(limit) = args.get(4) {
+            model.set_prefill_batch_limit(limit.parse()?)?;
+        }
         let mut measurements = Vec::new();
         let mut compared_logits = 0usize;
         let mut mismatched_logits = 0usize;
@@ -206,6 +210,7 @@ mod comparison {
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "context":snapshot.context,"kv_cache":snapshot.kv_cache,
+                    "prefill_batch":model.prefill_batch_limit(),
                     "compared_logits":compared_logits,"mismatched_logits":mismatched_logits,
                     "bit_identical":mismatched_logits == 0,"measurements":measurements,
                 }))?

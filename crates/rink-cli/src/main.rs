@@ -48,6 +48,9 @@ enum Command {
         /// Report prefill timing windows at existing chunk boundaries (in tokens).
         #[arg(long)]
         prefill_window: Option<usize>,
+        /// Maximum prefill batch: a power of two from 32 through 4096.
+        #[arg(long)]
+        prefill_batch: Option<usize>,
     },
     /// Validate the model configuration and show its physical/virtual layer layout.
     Inspect {
@@ -67,6 +70,9 @@ enum Command {
         /// KV-cache storage precision: f16 or f32; attention accumulates in f32.
         #[arg(long, default_value = "f16")]
         kv_cache: KvCachePrecision,
+        /// Maximum prefill batch (32..=4096, power of two); larger batches use more memory.
+        #[arg(long)]
+        prefill_batch: Option<usize>,
         /// Chat reasoning effort, between 0 and 0.99.
         #[arg(long, default_value_t = 0.9)]
         effort: f32,
@@ -91,6 +97,9 @@ enum Command {
         /// KV-cache storage precision: f16 or f32; attention accumulates in f32.
         #[arg(long, default_value = "f16")]
         kv_cache: KvCachePrecision,
+        /// Maximum prefill batch (32..=4096, power of two); larger batches use more memory.
+        #[arg(long)]
+        prefill_batch: Option<usize>,
         /// Pass an already rendered prompt directly to the tokenizer.
         #[arg(long)]
         raw: bool,
@@ -99,6 +108,15 @@ enum Command {
         effort: f32,
     },
 }
+
+fn validate_prefill_batch(batch: Option<usize>) -> Result<()> {
+    ensure!(
+        batch.is_none_or(|n| (32..=4096).contains(&n) && n.is_power_of_two()),
+        "prefill batch must be a power of two from 32 through 4096"
+    );
+    Ok(())
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Bench {
@@ -111,12 +129,14 @@ fn main() -> Result<()> {
             reference,
             profile_kernels,
             prefill_window,
+            prefill_batch,
         } => {
             ensure!(
                 repetitions > 0 && decode_tokens > 0,
                 "repetitions and decode tokens must be positive"
             );
             ensure!(prefill_window != Some(0), "prefill window must be positive");
+            validate_prefill_batch(prefill_batch)?;
             ensure!(
                 !prompt_tokens.is_empty()
                     && prompt_tokens
@@ -137,11 +157,19 @@ fn main() -> Result<()> {
                     reference,
                     profile_kernels,
                     prefill_window,
+                    prefill_batch,
                 })
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (model, kv_cache, reference, profile_kernels, prefill_window);
+                let _ = (
+                    model,
+                    kv_cache,
+                    reference,
+                    profile_kernels,
+                    prefill_window,
+                    prefill_batch,
+                );
                 anyhow::bail!("benchmark requires macOS with Metal")
             }
         }
@@ -177,16 +205,26 @@ fn main() -> Result<()> {
             max_tokens,
             context,
             kv_cache,
+            prefill_batch,
             raw,
             effort,
         } => {
+            validate_prefill_batch(prefill_batch)?;
             ensure!(max_tokens > 0, "--max-tokens must be positive");
             ensure!(
                 effort.is_finite() && (0.0..=0.99).contains(&effort),
                 "--effort must be in 0..=0.99"
             );
             generate(
-                model, prompt, image, max_tokens, context, raw, effort, kv_cache,
+                model,
+                prompt,
+                image,
+                max_tokens,
+                context,
+                raw,
+                effort,
+                kv_cache,
+                prefill_batch,
             )
         }
         Command::Chat {
@@ -194,9 +232,11 @@ fn main() -> Result<()> {
             max_tokens,
             context,
             kv_cache,
+            prefill_batch,
             effort,
             show_thinking,
         } => {
+            validate_prefill_batch(prefill_batch)?;
             ensure!(max_tokens > 0, "--max-tokens must be positive");
             ensure!(
                 max_tokens < context,
@@ -208,11 +248,19 @@ fn main() -> Result<()> {
             );
             #[cfg(target_os = "macos")]
             {
-                chat::run(model, max_tokens, context, effort, show_thinking, kv_cache)
+                chat::run(
+                    model,
+                    max_tokens,
+                    context,
+                    effort,
+                    show_thinking,
+                    kv_cache,
+                    prefill_batch,
+                )
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (model, show_thinking, kv_cache);
+                let _ = (model, show_thinking, kv_cache, prefill_batch);
                 anyhow::bail!("chat requires macOS with Metal; CUDA is not implemented yet")
             }
         }
@@ -230,6 +278,7 @@ fn generate(
     _: bool,
     _: f32,
     _: KvCachePrecision,
+    _: Option<usize>,
 ) -> Result<()> {
     anyhow::bail!("this build supports generation on macOS with Metal; CUDA is not implemented yet")
 }
@@ -245,6 +294,7 @@ fn generate(
     raw: bool,
     effort: f32,
     kv_cache: KvCachePrecision,
+    prefill_batch: Option<usize>,
 ) -> Result<()> {
     use anyhow::Context;
     use rink_core::{Accelerator, AutoregressiveModel};
@@ -284,6 +334,9 @@ fn generate(
     );
     let mut model =
         rink_inkling::Inkling::load_with_kv_cache(device, &directory, context, kv_cache)?;
+    if let Some(limit) = prefill_batch {
+        model.set_prefill_batch_limit(limit)?;
+    }
     let mut prefill = progress::PrefillDisplay::new();
     let mut next = if let Some(image) = &image {
         model.prefill_image_greedy_with_progress(tokens, image, |event| prefill.observe(event))
