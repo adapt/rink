@@ -55,8 +55,9 @@ Enter one message per line. Replies appear as the model generates them.
 Chat uses a 262,144-token context, a 16,384-token reply limit, and effort `0.9` by default.
 The reply limit includes reasoning tokens. The context limit covers the full conversation.
 The KV cache uses FP16. Conversation history stays in memory until reset or exit.
-Prefill uses batches of up to 2,048 tokens. Use `--prefill-batch 128` to reduce
-memory use. See the [performance measurements](benchmarks/long-context.md).
+Prefill uses batches of up to 1,024 tokens. This targets about 30 GiB of Metal
+memory at 256K context. Use `--prefill-batch 128` to reduce memory use. See the
+[performance measurements](benchmarks/prefill-30g.md).
 
 To ask about a picture, enter `/image /path/to/picture.png`, then enter your question.
 Each message can have one image. Images must use 8-bit channels and can be up to 16,384 pixels on each side.

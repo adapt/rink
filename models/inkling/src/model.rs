@@ -72,6 +72,7 @@ struct ExpertGroups<B> {
     slots: B,
     tiles: B,
     max_tiles: usize,
+    tile_size: usize,
 }
 type ExpertPair<B> = (Expert<B>, Expert<B>);
 
@@ -228,7 +229,8 @@ impl<A: Accelerator> Inkling<A> {
             layer_scratch: Vec::new(),
             layer_scratch_cursor: 0,
             in_layer: false,
-            prefill_batch_limit: 2048,
+            // About 29 GiB of Metal allocation at 256K with FP16 KV storage.
+            prefill_batch_limit: 1024,
             batch: 1,
         };
         model.reset()?;
@@ -775,13 +777,15 @@ impl<A: Accelerator> Inkling<A> {
         // More score groups hide latency on small decode grids. Both larger
         // decode grids and prompt batches benefit from ordered value prefetch.
         // All paths retain the same dot products, softmax and partition sums.
-        let (partition_kernel, partition_threads, query_tile) =
-            if !local && d == 128 && self.batch >= 4 && parts >= 8 {
-                ("attention_partition_queries4", 256, 4)
+        let (partition_kernel, partition_threads, query_tile, partition_heads) =
+            if local && d == 128 && qh == 3 * kh && self.batch >= 4 {
+                ("attention_partition_heads3", 256, 1, kh)
+            } else if !local && d == 128 && self.batch >= 4 && parts >= 8 {
+                ("attention_partition_queries4", 256, 4, qh)
             } else if self.batch == 1 && parts <= 2 {
-                ("attention_partition_wide", 512, 1)
+                ("attention_partition_wide", 512, 1, qh)
             } else {
-                ("attention_partition_prefetch", 256, 1)
+                ("attention_partition_prefetch", 256, 1, qh)
             };
         let (finish_kernel, finish_threads) = if self.batch > 1 && (129..=2048).contains(&parts) {
             ("attention_finish_cached", 128)
@@ -798,7 +802,7 @@ impl<A: Accelerator> Inkling<A> {
                 &[&partials, &q, &keys, &values, &k, &v, &r, &profiles],
                 &geometry,
                 &[],
-                count.div_ceil(query_tile) * qh * parts * partition_threads,
+                count.div_ceil(query_tile) * partition_heads * parts * partition_threads,
                 partition_threads,
             )?;
             self.run(
@@ -862,8 +866,11 @@ impl<A: Accelerator> Inkling<A> {
         if let Some(groups) = groups {
             // NVFP4 tables are already resident for decode. Reuse the same
             // exact values in prefill without allocating another workspace.
+            let threads = if groups.tile_size == 32 { 256 } else { 128 };
             self.run(
-                if format == 0 {
+                if groups.tile_size == 32 {
+                    "expert_matmul_m32k32"
+                } else if format == 0 {
                     "expert_matmul_nvfp4"
                 } else {
                     "expert_matmul_tiled"
@@ -880,8 +887,8 @@ impl<A: Accelerator> Inkling<A> {
                 ],
                 &[rows, cols, top, format, usize::from(down), self.batch],
                 &caps,
-                rows.div_ceil(32) * groups.max_tiles * 128,
-                128,
+                rows.div_ceil(32) * groups.max_tiles * threads,
+                threads,
             )?;
         } else {
             self.run(
@@ -931,9 +938,12 @@ impl<A: Accelerator> Inkling<A> {
         let experts = self.config.text_config.n_routed_experts;
         let top = self.config.text_config.num_experts_per_tok;
         let count = self.batch * top;
-        // Sum ceil(count_per_expert / 8), bounded by total slots plus at most
-        // seven padding slots for each nonempty expert.
-        let max_tiles = (count + 7 * experts.min(count)) / 8;
+        // Larger tiles pay off when enough tokens reuse each expert. Keep small
+        // batches on eight-slot tiles to avoid multiplying mostly padding.
+        let tile_size = if self.batch >= 512 { 32 } else { 8 };
+        // Sum ceil(count_per_expert / tile_size), bounded by total slots plus
+        // at most tile_size - 1 padding slots for each nonempty expert.
+        let max_tiles = (count + (tile_size - 1) * experts.min(count)) / tile_size;
         let slots = self.alloc(experts * (self.batch + 1))?;
         let tiles = self.alloc(1 + 2 * max_tiles)?;
         self.run(
@@ -947,7 +957,7 @@ impl<A: Accelerator> Inkling<A> {
         self.run(
             "expert_tiles",
             &[&tiles, &slots],
-            &[experts, self.batch],
+            &[experts, self.batch, tile_size],
             &[],
             32,
             32,
@@ -956,6 +966,7 @@ impl<A: Accelerator> Inkling<A> {
             slots,
             tiles,
             max_tiles,
+            tile_size,
         })
     }
     fn moe(

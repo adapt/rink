@@ -420,6 +420,65 @@ fn grouped_and_fused_experts_match_vectors_with_sparse_routes_and_partial_tiles(
                             "NVFP4 grouped: rows={rows} cols={cols} batch={batch} sparse={sparse} down={down}"
                         );
                     }
+                    {
+                        let (name, tile_size) = ("expert_matmul_m32k32", 32usize);
+                        let max_tiles = (slots + (tile_size - 1) * experts.min(slots)) / tile_size;
+                        let large_tiles =
+                            d.upload(&vec![0xff; (1 + 2 * max_tiles + 17) * 4]).unwrap();
+                        let large = upload(&mut d, &vec![f32::NAN; slots * rows + 17]);
+                        // SAFETY: the tile list uses the rounded-slot upper bound;
+                        // inputs and outputs use the same checked shape as the reference.
+                        unsafe {
+                            k.run(
+                                &mut d,
+                                "expert_tiles",
+                                &[&large_tiles, &groups],
+                                Params::new(&[experts, batch, tile_size], &[]),
+                                32,
+                                32,
+                            )
+                            .unwrap();
+                            k.run(
+                                &mut d,
+                                name,
+                                &[
+                                    &large,
+                                    &weights,
+                                    &scales,
+                                    &factors,
+                                    &input,
+                                    &groups,
+                                    &large_tiles,
+                                    &table,
+                                ],
+                                p,
+                                rows.div_ceil(32) * max_tiles * 256,
+                                256,
+                            )
+                            .unwrap();
+                        }
+                        let tile_values = ints(d.read(&large_tiles).unwrap());
+                        let mut expected = Vec::new();
+                        for e in 0..experts {
+                            for first in
+                                (0..actual_groups[e * (batch + 1)] as usize).step_by(tile_size)
+                            {
+                                expected.extend([e as u32, first as u32]);
+                            }
+                        }
+                        assert_eq!(tile_values[0] as usize, expected.len() / 2);
+                        assert_eq!(&tile_values[1..1 + expected.len()], &expected);
+                        assert!(
+                            tile_values[1 + expected.len()..]
+                                .iter()
+                                .all(|&v| v == u32::MAX)
+                        );
+                        assert_eq!(
+                            d.read(&large).unwrap(),
+                            d.read(&tiled).unwrap(),
+                            "{name}: format={format} rows={rows} cols={cols} batch={batch} sparse={sparse} down={down}"
+                        );
+                    }
                     let tiled_values = read(&mut d, &tiled);
                     let reference = read(&mut d, &new);
                     for (i, (&a, &b)) in tiled_values.iter().zip(&reference).enumerate() {
@@ -1981,28 +2040,42 @@ fn full_256k_attention_geometry_retrieves_the_first_token() {
 #[test]
 #[ignore = "requires a Metal GPU"]
 fn shared_query_attention_preserves_partials_and_group_tails() {
+    shared_attention_preserves_partials(false);
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn shared_head_attention_preserves_ring_wraps_and_query_groups() {
+    shared_attention_preserves_partials(true);
+}
+
+fn shared_attention_preserves_partials(local: bool) {
     let mut device = Metal::new().unwrap();
     let kernels = Kernels::compile(&mut device).unwrap();
     let (qh, kh, dim, rel_dim, extent) = (6, 2, 128, 17, 1024);
     for fp16 in [false, true] {
-        for (position, batch) in [
+        let mut cases = vec![
             (0usize, 7usize),
             (31, 5),
             (126, 7),
             (1023, 5),
             (65537, 7),
             (262013, 7),
-        ] {
-            let capacity = position + batch + 3;
+        ];
+        if local {
+            cases.extend([(1048501, 7), (513, 1033)]);
+        }
+        for (position, batch) in cases {
+            let capacity = if local { 1024 } else { position + batch + 3 };
             let vals = |n: usize, phase: usize| -> Vec<f32> {
                 (0..n)
                     .map(|i| (((i * 17 + phase) % 113) as f32 - 56.) / 113.)
                     .collect()
             };
             let mut cache = vals(capacity * kh * dim, 1);
-            cache[position * kh * dim..].fill(f32::NAN);
+            cache[position.min(capacity) * kh * dim..].fill(f32::NAN);
             let keys = upload_cache(&mut device, &cache, fp16);
-            for v in &mut cache[..position * kh * dim] {
+            for v in &mut cache[..position.min(capacity) * kh * dim] {
                 *v *= -0.7;
             }
             let values = upload_cache(&mut device, &cache, fp16);
@@ -2012,7 +2085,7 @@ fn shared_query_attention_preserves_partials_and_group_tails() {
             let fresh_v = upload(&mut device, &vals(batch * kh * dim, 31));
             let rel = upload(&mut device, &vals(batch * qh * rel_dim, 37));
             let profiles = upload(&mut device, &vals(rel_dim * extent, 41));
-            let parts = (position + batch).div_ceil(128);
+            let parts = (position + batch).min(capacity).div_ceil(128);
             let stride = qh * parts * (dim + 2);
             let reference = device.allocate(batch * stride * 4).unwrap();
             let geometry = Params::new(
@@ -2031,7 +2104,7 @@ fn shared_query_attention_preserves_partials_and_group_tails() {
                 ],
                 &[],
             );
-            // SAFETY: full attention before capacity, complete cache and fresh rows.
+            // SAFETY: complete cache and fresh rows cover full or sliding attention.
             unsafe {
                 kernels
                     .run(
@@ -2064,8 +2137,16 @@ fn shared_query_attention_preserves_partials_and_group_tails() {
                     .unwrap();
             }
             let expected_output = device.read(&reference_output).unwrap();
-            let (name, threads) = ("attention_partition_queries4", 256);
-            for group in [1usize, 3, 4, 7] {
+            let (name, threads) = if local {
+                ("attention_partition_heads3", 256)
+            } else {
+                ("attention_partition_queries4", 256)
+            };
+            for group in if local {
+                vec![1usize, 7, 128]
+            } else {
+                vec![1, 3, 4, 7]
+            } {
                 let output = upload(&mut device, &vec![f32::NAN; batch * qh * dim + 17]);
                 for offset in (0..batch).step_by(group) {
                     let count = group.min(batch - offset);
@@ -2074,8 +2155,9 @@ fn shared_query_attention_preserves_partials_and_group_tails() {
                     let mut p = geometry;
                     p.u[9] = count as u32;
                     p.u[11] = offset as u32;
-                    // SAFETY: 128-wide heads, full non-ring history, query groups
-                    // retain their original fresh-KV base and fit the partial buffer.
+                    // SAFETY: 128-wide heads, three query heads per KV head. The four-query
+                    // kernel is only used for full attention. Query groups retain
+                    // the original fresh-KV base and fit the partial buffer.
                     unsafe {
                         kernels
                             .run(
@@ -2086,7 +2168,11 @@ fn shared_query_attention_preserves_partials_and_group_tails() {
                                     &profiles,
                                 ],
                                 p,
-                                count.div_ceil(4) * qh * parts * threads,
+                                if local {
+                                    count * kh * parts * threads
+                                } else {
+                                    count.div_ceil(4) * qh * parts * threads
+                                },
                                 threads,
                             )
                             .unwrap();

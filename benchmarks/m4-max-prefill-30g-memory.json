@@ -1,0 +1,510 @@
+{
+  "method": "Run the real decoder allocation schedule with size-only buffers. Retain pending buffers until synchronization. No GPU math, driver overhead, page rounding, image encoder or process RSS.",
+  "contexts": [
+    {
+      "batch_limit": 1024,
+      "batches": {
+        "1024": 4
+      },
+      "checkpoints": [
+        {
+          "live_bytes": 21422660128,
+          "peak_bytes": 21695074764,
+          "position": 1024
+        },
+        {
+          "live_bytes": 21424262952,
+          "peak_bytes": 21695074764,
+          "position": 4096
+        }
+      ],
+      "context": 4096,
+      "kv_cache": "f16",
+      "live_bytes": 21424262952,
+      "loaded_bytes": 19282843680,
+      "method": "allocation simulation; no GPU execution, page rounding or driver overhead",
+      "peak_bytes": 21695074764,
+      "stable_prefill_peak": true
+    },
+    {
+      "batch_limit": 1024,
+      "batches": {
+        "1024": 64
+      },
+      "checkpoints": [
+        {
+          "live_bytes": 23627618848,
+          "peak_bytes": 23900033484,
+          "position": 1024
+        },
+        {
+          "live_bytes": 23627618848,
+          "peak_bytes": 23900033484,
+          "position": 16384
+        },
+        {
+          "live_bytes": 23627618848,
+          "peak_bytes": 23900033484,
+          "position": 32768
+        },
+        {
+          "live_bytes": 23627618848,
+          "peak_bytes": 23900033484,
+          "position": 49152
+        },
+        {
+          "live_bytes": 23629221672,
+          "peak_bytes": 23900033484,
+          "position": 65536
+        }
+      ],
+      "context": 65536,
+      "kv_cache": "f16",
+      "live_bytes": 23629221672,
+      "loaded_bytes": 21296109600,
+      "method": "allocation simulation; no GPU execution, page rounding or driver overhead",
+      "peak_bytes": 23900033484,
+      "stable_prefill_peak": true
+    },
+    {
+      "batch_limit": 1024,
+      "batches": {
+        "1024": 256
+      },
+      "checkpoints": [
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 1024
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 16384
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 32768
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 49152
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 65536
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 81920
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 98304
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 114688
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 131072
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 147456
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 163840
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 180224
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 196608
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 212992
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 229376
+        },
+        {
+          "live_bytes": 30683486752,
+          "peak_bytes": 30955901388,
+          "position": 245760
+        },
+        {
+          "live_bytes": 30685089576,
+          "peak_bytes": 30955901388,
+          "position": 262144
+        }
+      ],
+      "context": 262144,
+      "kv_cache": "f16",
+      "live_bytes": 30685089576,
+      "loaded_bytes": 27738560544,
+      "method": "allocation simulation; no GPU execution, page rounding or driver overhead",
+      "peak_bytes": 30955901388,
+      "stable_prefill_peak": true
+    },
+    {
+      "batch_limit": 1024,
+      "batches": {
+        "1024": 1024
+      },
+      "checkpoints": [
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 1024
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 16384
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 32768
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 49152
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 65536
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 81920
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 98304
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 114688
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 131072
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 147456
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 163840
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 180224
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 196608
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 212992
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 229376
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 245760
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 262144
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 278528
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 294912
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 311296
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 327680
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 344064
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 360448
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 376832
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 393216
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 409600
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 425984
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 442368
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 458752
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 475136
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 491520
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 507904
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 524288
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 540672
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 557056
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 573440
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 589824
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 606208
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 622592
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 638976
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 655360
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 671744
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 688128
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 704512
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 720896
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 737280
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 753664
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 770048
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 786432
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 802816
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 819200
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 835584
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 851968
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 868352
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 884736
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 901120
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 917504
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 933888
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 950272
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 966656
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 983040
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 999424
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 1015808
+        },
+        {
+          "live_bytes": 58906958368,
+          "peak_bytes": 59179373004,
+          "position": 1032192
+        },
+        {
+          "live_bytes": 58908561192,
+          "peak_bytes": 59179373004,
+          "position": 1048576
+        }
+      ],
+      "context": 1048576,
+      "kv_cache": "f16",
+      "live_bytes": 58908561192,
+      "loaded_bytes": 53508364320,
+      "method": "allocation simulation; no GPU execution, page rounding or driver overhead",
+      "peak_bytes": 59179373004,
+      "stable_prefill_peak": true
+    }
+  ]
+}

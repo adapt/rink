@@ -1,0 +1,412 @@
+{
+  "date": "2026-11-22",
+  "device": "Apple M4 Max",
+  "method": "Isolated kernels, synthetic native dimensions. Expert routes are balanced; repeated weights may stay cached. One warmup and three timing trials of four dispatches, median GPU time per dispatch. Attention alternates candidate order for four timed trials after warmup. Every output byte compared with reference. These are not full-model token rates.",
+  "experts": [
+    {
+      "batch": 256,
+      "down": false,
+      "format": 0,
+      "gpu_us": 4571.416677208617,
+      "kernel": "expert_matmul_nvfp4"
+    },
+    {
+      "batch": 256,
+      "down": false,
+      "format": 0,
+      "gpu_us": 5166.520830243826,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 256,
+      "down": false,
+      "format": 0,
+      "gpu_us": 9099.145856453106,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 512,
+      "down": false,
+      "format": 0,
+      "gpu_us": 9232.375014107674,
+      "kernel": "expert_matmul_nvfp4"
+    },
+    {
+      "batch": 512,
+      "down": false,
+      "format": 0,
+      "gpu_us": 5713.874998036772,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 512,
+      "down": false,
+      "format": 0,
+      "gpu_us": 9588.104177964851,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "format": 0,
+      "gpu_us": 18607.187492307276,
+      "kernel": "expert_matmul_nvfp4"
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "format": 0,
+      "gpu_us": 11430.687503889203,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "format": 0,
+      "gpu_us": 10375.291662057862,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 256,
+      "down": true,
+      "format": 0,
+      "gpu_us": 2295.6354077905416,
+      "kernel": "expert_matmul_nvfp4"
+    },
+    {
+      "batch": 256,
+      "down": true,
+      "format": 0,
+      "gpu_us": 2603.000000817701,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 256,
+      "down": true,
+      "format": 0,
+      "gpu_us": 4594.406258547679,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 512,
+      "down": true,
+      "format": 0,
+      "gpu_us": 4643.437481718138,
+      "kernel": "expert_matmul_nvfp4"
+    },
+    {
+      "batch": 512,
+      "down": true,
+      "format": 0,
+      "gpu_us": 2918.437501648441,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 512,
+      "down": true,
+      "format": 0,
+      "gpu_us": 4827.343742363155,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "format": 0,
+      "gpu_us": 9359.781251987442,
+      "kernel": "expert_matmul_nvfp4"
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "format": 0,
+      "gpu_us": 5757.385428296402,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "format": 0,
+      "gpu_us": 5263.875005766749,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 256,
+      "down": false,
+      "format": 1,
+      "gpu_us": 6465.906248195097,
+      "kernel": "expert_matmul_tiled"
+    },
+    {
+      "batch": 256,
+      "down": false,
+      "format": 1,
+      "gpu_us": 6009.281263686717,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 256,
+      "down": false,
+      "format": 1,
+      "gpu_us": 9895.822906401008,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 512,
+      "down": false,
+      "format": 1,
+      "gpu_us": 12925.031245686114,
+      "kernel": "expert_matmul_tiled"
+    },
+    {
+      "batch": 512,
+      "down": false,
+      "format": 1,
+      "gpu_us": 6584.479153389111,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 512,
+      "down": false,
+      "format": 1,
+      "gpu_us": 10460.406250786036,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "format": 1,
+      "gpu_us": 25718.15624833107,
+      "kernel": "expert_matmul_tiled"
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "format": 1,
+      "gpu_us": 13138.61456583254,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "format": 1,
+      "gpu_us": 11294.781259493902,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 256,
+      "down": true,
+      "format": 1,
+      "gpu_us": 3259.145829360932,
+      "kernel": "expert_matmul_tiled"
+    },
+    {
+      "batch": 256,
+      "down": true,
+      "format": 1,
+      "gpu_us": 3027.479164302349,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 256,
+      "down": true,
+      "format": 1,
+      "gpu_us": 4965.968750184402,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 512,
+      "down": true,
+      "format": 1,
+      "gpu_us": 6511.125015094876,
+      "kernel": "expert_matmul_tiled"
+    },
+    {
+      "batch": 512,
+      "down": true,
+      "format": 1,
+      "gpu_us": 3323.2187561225146,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 512,
+      "down": true,
+      "format": 1,
+      "gpu_us": 5275.291652651504,
+      "kernel": "expert_matmul_m64k16"
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "format": 1,
+      "gpu_us": 12947.281269589439,
+      "kernel": "expert_matmul_tiled"
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "format": 1,
+      "gpu_us": 6634.19789634645,
+      "kernel": "expert_matmul_m32k32"
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "format": 1,
+      "gpu_us": 6020.12500166893,
+      "kernel": "expert_matmul_m64k16"
+    }
+  ],
+  "local_attention": [
+    {
+      "batch": 128,
+      "fp16": true,
+      "history": 0,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.0010088958661071956,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.0011709999525919557,
+        0.0010090416762977839,
+        0.0010087500559166074,
+        0.001008416642434895
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 128,
+      "fp16": true,
+      "history": 0,
+      "kernel": "attention_partition_heads3",
+      "median_gpu_seconds": 0.0005416666390374303,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.0005469582974910736,
+        0.000542833236977458,
+        0.0005405000410974026,
+        0.0005365000106394291
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 0,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.015868437534663826,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.019651083275675774,
+        0.01729500002693385,
+        0.014441875042393804,
+        0.01370350003708154
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 0,
+      "kernel": "attention_partition_heads3",
+      "median_gpu_seconds": 0.007797020836733282,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.008268875069916248,
+        0.007763874949887395,
+        0.007830166723579168,
+        0.00614183337893337
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 128,
+      "fp16": true,
+      "history": 1024,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.003597937466111034,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.0036431249463930726,
+        0.003453750046901405,
+        0.0039609166560694575,
+        0.0035527499858289957
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 128,
+      "fp16": true,
+      "history": 1024,
+      "kernel": "attention_partition_heads3",
+      "median_gpu_seconds": 0.0016318542184308171,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.001694791717454791,
+        0.0015761667164042592,
+        0.0015743332915008068,
+        0.001687541720457375
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 1024,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.025994291703682393,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.02618333336431533,
+        0.025805250043049455,
+        0.02575041668023914,
+        0.026411041617393494
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 1024,
+      "kernel": "attention_partition_heads3",
+      "median_gpu_seconds": 0.012125354201998562,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.012216916657052934,
+        0.012279791641049087,
+        0.012033791746944189,
+        0.011621000012382865
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 261120,
+      "kernel": "attention_partition_prefetch",
+      "median_gpu_seconds": 0.02604343747952953,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.026512083248235285,
+        0.025639750063419342,
+        0.025730499997735023,
+        0.026356374961324036
+      ],
+      "window": 1024
+    },
+    {
+      "batch": 1024,
+      "fp16": true,
+      "history": 261120,
+      "kernel": "attention_partition_heads3",
+      "median_gpu_seconds": 0.012243562494404614,
+      "partials_bit_exact": true,
+      "trials_gpu_seconds": [
+        0.011508000083267689,
+        0.012249333318322897,
+        0.01224549999460578,
+        0.012241624994203448
+      ],
+      "window": 1024
+    }
+  ],
+  "experimental_variant": "The 64-slot expert shape is recorded for comparison but is not retained in the engine."
+}

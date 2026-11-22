@@ -1,5 +1,8 @@
 # Prefill speed and memory budgets
 
+This report covers the earlier 2,048-token default. See the
+[current kernels and 30 GiB memory target](prefill-30g.md) for the new default.
+
 Measured on November 22, 2026, on an Apple M4 Max with 40 GPU cores and 48 GiB
 of unified memory. The checkpoint is the original Inkling 2 Mini release,
 revision `6e7c8248f75265bdd4fbab5273304243b5d8c2cb`. These runs use FP16 KV storage,

@@ -356,13 +356,13 @@ kernel void expert_groups(device uint* groups [[buffer(0)]], device const float*
     }
     if(lane==0)groups[base]=count;
 }
-// experts, batch. Compact the nonempty eight-token expert tiles into
+// experts, batch, tile size (zero selects eight). Compact nonempty expert tiles into
 // [tile_count, expert, first_grouped_slot, ...]. One SIMD group builds the list.
 kernel void expert_tiles(device uint* tiles [[buffer(0)]], device const uint* groups [[buffer(1)]], constant Params& p [[buffer(15)]], uint lane [[thread_index_in_simdgroup]]) {
-    uint total=0;
-    for(uint base=0;base<p.u[0];base+=32){uint expert=base+lane,n=expert<p.u[0]?(groups[expert*(p.u[1]+1)]+7)/8:0;
+    uint width=p.u[2]?p.u[2]:8,total=0;
+    for(uint base=0;base<p.u[0];base+=32){uint expert=base+lane,n=expert<p.u[0]?(groups[expert*(p.u[1]+1)]+width-1)/width:0;
         uint offset=simd_prefix_exclusive_sum(n);
-        for(uint j=0;j<n;j++){uint i=1+2*(total+offset+j);tiles[i]=expert;tiles[i+1]=j*8;}
+        for(uint j=0;j<n;j++){uint i=1+2*(total+offset+j);tiles[i]=expert;tiles[i+1]=j*width;}
         total+=simd_sum(n);
     }
     if(lane==0)tiles[0]=total;
@@ -620,6 +620,56 @@ kernel void attention_partition_queries4(device float* out [[buffer(0)]], device
         for(uint u=0;u<4;u++)if(first+u<p.u[9]){uint dest=((first+u)*p.u[0]+h)*parts*130+part*130;out[dest+2+tid]=sum[u];}
     }
 }
+// Three query heads share one KV head in the native model. Reuse each key,
+// value and relative-position profile load across those heads. This also works
+// with the sliding ring cache: all three heads have the same query position.
+// 128-wide heads, q_heads == 3 * kv_heads, 256 threads per group.
+kernel void attention_partition_heads3(device float* out [[buffer(0)]], device const float* q [[buffer(1)]], device const uchar* keys [[buffer(2)]], device const uchar* values [[buffer(3)]], device const float* new_keys [[buffer(4)]], device const float* new_values [[buffer(5)]], device const float* rel [[buffer(6)]], device const float* profiles [[buffer(7)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float3 scores[128],maxima[4],totals[4];
+    uint parts=p.u[8],part=group%parts,kh=(group/parts)%p.u[1],token=group/(parts*p.u[1]),sg=tid/32;
+    uint query=(token+p.u[11])*p.u[0]+kh*3,pos=p.u[3]+token+p.u[11],n=min(pos+1,p.u[4]),start=part*128;
+    uint dest=(token*p.u[0]+kh*3)*parts*130+part*130;
+    if(start>=n){
+        for(uint u=0;u<3;u++){if(tid==0){out[dest+u*parts*130]=-INFINITY;out[dest+u*parts*130+1]=0;}if(tid<128)out[dest+u*parts*130+2+tid]=0;}
+        return;
+    }
+    uint first=pos+1-n+start,first_slot=first%p.u[4],length=min(128u,n-start);
+    for(uint j=sg;j<128;j+=8){float3 score=-INFINITY;
+        if(j<length){uint kp=first+j,dist=pos-kp;bool fresh=kp>=p.u[3];
+            uint offset=((fresh?kp-p.u[3]:partition_cache_slot(first_slot,j,p.u[4]))*p.u[1]+kh)*128;
+            float3 dot=0;
+            for(uint i=lane;i<128;i+=32){float key=kv_read(keys,new_keys,offset+i,fresh,p.u[10]);
+                dot+=float3(q[query*128+i],q[(query+1)*128+i],q[(query+2)*128+i])*key;}
+            score=simd_sum(dot)*rsqrt(float(p.u[2]));
+            float3 bias=0;
+            if(dist<p.u[7])for(uint i=lane;i<p.u[6];i+=32){float profile=profiles[i*p.u[7]+dist];
+                bias+=float3(rel[query*p.u[6]+i],rel[(query+1)*p.u[6]+i],rel[(query+2)*p.u[6]+i])*profile;}
+            score+=simd_sum(bias);
+        }
+        if(lane==0)scores[j]=score;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid<128){float3 mx=simd_max(scores[tid]);if(lane==0)maxima[sg]=mx;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float3 mx=max(max(maxima[0],maxima[1]),max(maxima[2],maxima[3]));
+    if(tid<128){float3 weight=exp(scores[tid]-mx);scores[tid]=weight;float3 den=simd_sum(weight);if(lane==0)totals[sg]=den;}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if(tid==0){float3 den=totals[0]+totals[1]+totals[2]+totals[3];
+        for(uint u=0;u<3;u++){out[dest+u*parts*130]=mx[u];out[dest+u*parts*130+1]=den[u];}}
+    if(tid<128){float3 sum=0;uint j=0;
+        for(;j+3<length;j+=4){
+            uint kp0=first+j+0;bool f0=kp0>=p.u[3];uint o0=((f0?kp0-p.u[3]:partition_cache_slot(first_slot,j+0,p.u[4]))*p.u[1]+kh)*128+tid;float v0=kv_read(values,new_values,o0,f0,p.u[10]);
+            uint kp1=first+j+1;bool f1=kp1>=p.u[3];uint o1=((f1?kp1-p.u[3]:partition_cache_slot(first_slot,j+1,p.u[4]))*p.u[1]+kh)*128+tid;float v1=kv_read(values,new_values,o1,f1,p.u[10]);
+            uint kp2=first+j+2;bool f2=kp2>=p.u[3];uint o2=((f2?kp2-p.u[3]:partition_cache_slot(first_slot,j+2,p.u[4]))*p.u[1]+kh)*128+tid;float v2=kv_read(values,new_values,o2,f2,p.u[10]);
+            uint kp3=first+j+3;bool f3=kp3>=p.u[3];uint o3=((f3?kp3-p.u[3]:partition_cache_slot(first_slot,j+3,p.u[4]))*p.u[1]+kh)*128+tid;float v3=kv_read(values,new_values,o3,f3,p.u[10]);
+            sum+=scores[j+0]*v0;sum+=scores[j+1]*v1;sum+=scores[j+2]*v2;sum+=scores[j+3]*v3;
+        }
+        for(;j<length;j++){uint kp=first+j;bool fresh=kp>=p.u[3];uint offset=((fresh?kp-p.u[3]:partition_cache_slot(first_slot,j,p.u[4]))*p.u[1]+kh)*128+tid;
+            sum+=scores[j]*kv_read(values,new_values,offset,fresh,p.u[10]);}
+        for(uint u=0;u<3;u++)out[dest+u*parts*130+2+tid]=sum[u];
+    }
+}
+
 kernel void attention_finish(device float* y [[buffer(0)]], device const float* parts [[buffer(1)]], device const float* sinks [[buffer(2)]], device const float* gate [[buffer(3)]], constant Params& p [[buffer(15)]], uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint local_query=t/32,d=p.u[2],n=p.u[8];if(local_query>=p.u[0]*p.u[9])return;
     uint query=local_query+p.u[11]*p.u[0],base=local_query*n*(d+2);float mx=sinks[query];for(uint j=lane;j<n;j+=32)mx=max(mx,parts[base+j*(d+2)]);mx=simd_max(mx);
@@ -677,6 +727,46 @@ kernel void argmax_finish(device uint* y [[buffer(0)]], device const Choice* x [
 float4 expert_lookup4(device const uchar* w, device const uchar* scales, device const float* table, uint idx, uint expert) {
  uint codes=*((device const ushort*)(w+idx/2)),base=expert*4096+uint(scales[idx/16])*16;
  return float4(table[base+(codes&15)],table[base+((codes>>4)&15)],table[base+((codes>>8)&15)],table[base+(codes>>12)]);
+}
+
+// Larger grouped expert tiles reuse each decoded weight across more tokens.
+// Every 8x8 accumulator retains the reference kernel's FP32 operation order.
+// M grouped slots, 32 output rows, K input columns; 256 threads. Projection
+// buffers/Params match expert_matmul_tiled, with the NVFP4 table at buffer 7.
+// Other formats leave the table unused. The 32-slot wrapper uses 12 KiB of shared memory.
+template<uint M, uint K>
+void expert_matmul_large_impl(device float* y, device const uchar* w, device const uchar* scales, device const float* factors, device const float* x, device const uint* groups, device const uint* tiles, device const float* table, constant Params& p, uint group, uint tid, uint lane, threadgroup float* a, threadgroup float* b, threadgroup float* result) {
+    uint row_tiles=(p.u[0]+31)/32,tile=group/row_tiles;if(tile>=tiles[0])return;
+    uint row=(group%row_tiles)*32,expert=tiles[1+2*tile],first=tiles[2+2*tile],stride=p.u[5]+1,count=groups[expert*stride],cols=p.u[1],sg=tid/32;
+    float factor=p.u[3]==0?factors[expert]:1.f;
+    simdgroup_float8x8 sum[M/16];
+    for(uint j=0;j<M/16;j++)sum[j]=make_filled_simdgroup_matrix<float,8,8>(0.f);
+    // Match the reference's 32-column zero padding as well as its valid products.
+    for(uint base=0;base<((cols+31)/32)*32;base+=K){
+        for(uint i=tid;i<M*K/4;i+=256){uint r=i/(K/4),c=(i%(K/4))*4;float4 av=0;
+            if(first+r<count){uint slot=groups[expert*stride+1+first+r],src=(p.u[4]?slot:slot/p.u[2])*cols;
+                if(base+c+4<=cols)av=float4(*((device const packed_float4*)(x+src+base+c)));
+                else for(uint j=0;j<4;j++)if(base+c+j<cols)av[j]=x[src+base+c+j];}
+            for(uint j=0;j<4;j++)a[r*K+c+j]=av[j];}
+        for(uint i=tid;i<32*K/4;i+=256){uint r=i/(K/4),c=(i%(K/4))*4;float4 bv=0;
+            if(row+r<p.u[0]){uint idx=(expert*p.u[0]+row+r)*cols+base+c;
+                if(base+c+4<=cols)bv=p.u[3]==0?expert_lookup4(w,scales,table,idx,expert):expert_weight4(w,scales,idx,p.u[3],factor);
+                else if(p.u[3]==2)for(uint j=0;j<4;j++)if(base+c+j<cols)bv[j]=((device const float*)w)[idx+j];}
+            for(uint j=0;j<4;j++)b[(c+j)*32+r]=bv[j];}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for(uint k=0;k<K;k+=8){simdgroup_float8x8 bv;simdgroup_load(bv,b+k*32+(sg%4)*8,32);
+            for(uint j=0;j<M/16;j++){simdgroup_float8x8 av;simdgroup_load(av,a+((sg/4)*8+j*16)*K+k,K);simdgroup_multiply_accumulate(sum[j],av,bv,sum[j]);}}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for(uint j=0;j<M/16;j++)simdgroup_store(sum[j],result+(j*8+sg)*64,8);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint j=0;j<M/16;j++)for(uint i=lane;i<64;i+=32){uint t=first+(sg/4)*8+j*16+i/8,r=row+(sg%4)*8+i%8;
+        if(t<count && r<p.u[0]){uint slot=groups[expert*stride+1+t];y[slot*p.u[0]+r]=result[(j*8+sg)*64+i];}}
+}
+
+kernel void expert_matmul_m32k32(device float* y [[buffer(0)]], device const uchar* w [[buffer(1)]], device const uchar* scales [[buffer(2)]], device const float* factors [[buffer(3)]], device const float* x [[buffer(4)]], device const uint* groups [[buffer(5)]], device const uint* tiles [[buffer(6)]], device const float* table [[buffer(7)]], constant Params& p [[buffer(15)]], uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float a[32*32],b[32*32],result[32*32];
+    expert_matmul_large_impl<32,32>(y,w,scales,factors,x,groups,tiles,table,p,group,tid,lane,a,b,result);
 }
 
 // Same 8-slot / 32-row tile and ordered matrix operations as expert_matmul_tiled.
