@@ -17,7 +17,7 @@ features replace placeholders after text embedding normalization.
 
 ## Automated checks
 
-The 44 workspace tests include these image checks:
+The 46 workspace tests include these image checks:
 
 - Preprocessed pixels match the independent reference exactly, including alpha,
   padding and patch order. JPEG EXIF orientation is checked against Pillow.
@@ -105,3 +105,85 @@ This change adds measurement and display; batch sizes, kernels, and precision
 are unchanged. Progress tests compare token results, continuation logits, GPU
 dispatches, encoders, command buffers, and readback bytes with reporting enabled
 and disabled, for both KV-cache precisions.
+
+## Faster image encoding and prefill
+
+Implementation `92b3c8e` reduces preparation time for the same 5,344 × 3,044 image
+from 272.09 to 132.12 seconds. These are fresh before/after runs on the M4 Max,
+with the same prompt, 262,144-token context, FP16 KV caches, effort 0.9, and
+32-token prefill batches. The baseline is `931c014` with the benchmark harness
+and allocation counter added. The image size and model precision are unchanged.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Image encoding | 182.42 s | 58.01 s |
+| Prompt prefill, 10,342 tokens | 88.42 s | 72.88 s |
+| Prefill throughput | 117.0 tokens/s | 141.9 tokens/s |
+| Preparation, including image encoder load | 272.09 s | 132.12 s |
+| Peak Metal allocation | 28.75 GiB | 28.19 GiB |
+
+Encoding is 3.14× faster, prefill throughput is 21.3% higher, and total preparation
+is 2.06× faster in this pair. Peak Metal allocation falls by 574.38 MiB. These
+are single runs, with first-use allocations included and per-kernel timestamp
+profiling disabled. Model startup and PNG decoding are excluded. Peak allocation
+samples Metal's `current_allocated_size` after buffer allocations and at counter
+reset; it includes resources retained by pending commands. Process RSS was not
+measured. [Full measurements](m4-max-image-prefill.json) omit image-derived output
+tokens; the image and logit snapshot stay outside the repository.
+
+The changes are:
+
+- Native image attention uses eight SIMD groups to process two independent
+  eight-query tiles. They share each 32-key tile and its values. Output
+  accumulators stay in registers. The kernel retains the original FP32 matrix
+  operations, online softmax, and reduction order. Other head widths use the
+  existing kernel.
+- Image encoding reuses two buffers with nonoverlapping lifetimes. It also
+  releases the pixel upload after its projection and layer workspaces before
+  the final projector. All GPU dependencies use the existing ordered stream.
+- Prefill attention uses the existing ordered cache-prefetch kernel.
+- Grouped NVFP4 projections use the exact lookup tables already resident for
+  decode. This adds no tables or activation buffers. Matrix accumulation order
+  and the MXFP8 path remain unchanged.
+
+Isolated [kernel measurements](m4-max-image-prefill-kernels.json) used the full
+41,273-patch sequence, including CLS, and compared every output byte. The retained
+vision kernel took 2.40 seconds versus 7.91 seconds for the original. NVFP4 expert
+projections improved by about 10% for gate/up and 28% for down projection. These
+kernel measurements guide selection; the table above reports full model runs.
+
+Correctness checks passed:
+
+- All 46 workspace tests, including Metal tests, ran serially and passed.
+- The large image produced the same first token, 32 continuation tokens, and
+  all 6,401,856 continuation logits, bit for bit, as the baseline.
+- Vision attention matched the original for all 42,263,552 output floats at
+  the image's sequence length. Small tail cases also retain the FP64 oracle check.
+- Grouped NVFP4 tests compare exact output bytes across partial rows, short
+  input widths, sparse routes, partial token tiles, and shared/per-route inputs.
+  The existing exhaustive table test covers FP4 codes, FP8 scales, and signed zero.
+- The full 23-layer encoder passed the four independent CPU-reference images:
+  285,696 features, maximum absolute error `7.35e-6`, and no tolerance violations.
+  [Reference results](m4-max-image-prefill-vision.json) retain the existing bounds.
+- Formatting, Clippy with warnings denied, and diff checks passed.
+
+To repeat the full image comparison, build the benchmark with the baseline model
+code first and save its executable. Run both builds on the same image and snapshot:
+
+```sh
+cargo build --release -p rink-inkling --example bench_image
+cp target/release/examples/bench_image /tmp/rink-image-before
+/tmp/rink-image-before record checkpoints/inkling-2-mini /path/to/image.png /tmp/image-logits.bin
+# Switch to the candidate model code, then rebuild.
+cargo run --release -p rink-inkling --example bench_image -- \
+  compare checkpoints/inkling-2-mini /path/to/image.png /tmp/image-logits.bin
+```
+
+The baseline needs the benchmark harness and allocation counter. Keep snapshots
+outside the repository: they contain image-derived data. Run GPU checks one at a
+time. The isolated comparisons require no checkpoint:
+
+```sh
+cargo run --release -p rink-inkling --example bench_prefill_kernels -- 41273
+cargo run --release -p rink-inkling --example bench_projections -- --experts-only
+```
