@@ -58,7 +58,7 @@ pub fn run(
     writeln!(output, "Rink chat — enter a message and press Return.")?;
     writeln!(
         output,
-        "/reset clears the conversation; /continue resumes a reply; /quit exits."
+        "/image PATH attaches a picture; /reset clears the conversation; /continue resumes a reply; /quit exits."
     )?;
     writeln!(
         output,
@@ -67,6 +67,7 @@ pub fn run(
     let mut line = String::new();
     let mut stream = tokenizer.decode_stream(true);
     let mut channel = Channel::Hidden;
+    let mut pending_image: Option<rink_inkling::Image> = None;
     loop {
         write!(output, "\nYou: ")?;
         output.flush()?;
@@ -82,12 +83,13 @@ pub fn run(
             "/help" => {
                 writeln!(
                     output,
-                    "Enter one message per line. /reset clears history, /continue finishes a truncated reply, /quit exits. Thinking is shown with --show-thinking."
+                    "Enter one message per line. /image PATH attaches a PNG or JPEG to your next message; /image clear removes it. /reset clears history, /continue finishes a truncated reply, /quit exits. Thinking is shown with --show-thinking."
                 )?;
                 continue;
             }
             "/reset" => {
                 session.reset()?;
+                pending_image = None;
                 channel = Channel::Hidden;
                 stream = tokenizer.decode_stream(true);
                 writeln!(output, "Conversation cleared. The model is still loaded.")?;
@@ -98,6 +100,57 @@ pub fn run(
                     writeln!(output, "{error}")?;
                     continue;
                 }
+            }
+            "/image clear" => {
+                pending_image = None;
+                writeln!(output, "Pending image cleared.")?;
+                continue;
+            }
+            "/image" => {
+                writeln!(
+                    output,
+                    "Use /image PATH to attach a PNG or JPEG, then enter your question. /image clear removes the attachment."
+                )?;
+                continue;
+            }
+            command if command.starts_with("/image ") => {
+                if session.pending() {
+                    writeln!(
+                        output,
+                        "The last reply is unfinished. Use /continue or /reset."
+                    )?;
+                    continue;
+                }
+                if config.vision_config.is_none()
+                    || tokenizer.token_to_id(rink_inkling::image::IMAGE_TOKEN)
+                        != Some(config.image_token_id)
+                {
+                    writeln!(
+                        output,
+                        "This checkpoint or tokenizer does not support image input."
+                    )?;
+                    continue;
+                }
+                let path = command[7..].trim();
+                let path = path
+                    .strip_prefix('"')
+                    .and_then(|p| p.strip_suffix('"'))
+                    .or_else(|| path.strip_prefix('\'').and_then(|p| p.strip_suffix('\'')))
+                    .unwrap_or(path);
+                match rink_inkling::Image::open(path) {
+                    Ok(image) => {
+                        writeln!(
+                            output,
+                            "Attached {} × {} image ({} context tokens). Enter your question next.",
+                            image.width(),
+                            image.height(),
+                            image.token_count()
+                        )?;
+                        pending_image = Some(image);
+                    }
+                    Err(error) => writeln!(output, "Cannot attach image: {error:#}")?,
+                }
+                continue;
             }
             command if command.starts_with('/') => {
                 writeln!(output, "Unknown command. Use /help for available commands.")?;
@@ -111,7 +164,13 @@ pub fn run(
                     )?;
                     continue;
                 }
-                let rendered = if session.position() == 0 {
+                let rendered = if let Some(image) = &pending_image {
+                    if session.position() == 0 {
+                        rink_inkling::image::image_prompt(message, image.token_count(), effort)?
+                    } else {
+                        rink_inkling::image::image_user_message(message, image.token_count())
+                    }
+                } else if session.position() == 0 {
                     rink_inkling::chat_prompt(message, effort)?
                 } else {
                     rink_inkling::chat_user_message(message)
@@ -124,7 +183,14 @@ pub fn run(
                     continue;
                 }
                 eprintln!("Processing {} new tokens…", encoded.len());
-                session.start(encoded.get_ids(), max_tokens)?;
+                if let Some(image) = &pending_image {
+                    session.start_with(encoded.get_ids(), max_tokens, |model, tokens| {
+                        model.prefill_image_greedy(tokens, image)
+                    })?;
+                } else {
+                    session.start(encoded.get_ids(), max_tokens)?;
+                }
+                pending_image = None;
                 stream = tokenizer.decode_stream(true);
                 channel = Channel::Hidden;
             }

@@ -2,4 +2,6 @@
 /checkpoints/
 *.safetensors
 !models/inkling/tests/fixtures/tiny/model.safetensors
+!models/inkling/tests/fixtures/vision/model.safetensors
+!models/inkling/tests/fixtures/vision/expected.safetensors
 .DS_Store

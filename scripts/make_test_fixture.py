@@ -230,8 +230,9 @@ def layer(hidden, blocks, previous, i, visit, pos):
     return [a+b for a, b in zip(residual, x)]
 
 
-def step(token, pos):
-    hidden = norm(w('embed.weight')[token*8:(token+1)*8], 'embed_norm.weight')
+def step(token, pos, embedding=None):
+    hidden = (norm(w('embed.weight')[token*8:(token+1)*8], 'embed_norm.weight')
+              if embedding is None else embedding)
     blocks, visit = [], 0
     for i in range(2):
         hidden = layer(hidden, blocks, None, i, visit, pos)

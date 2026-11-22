@@ -3,8 +3,8 @@
 rink runs [Inkling 2 Mini](https://thinkingmachines.ai/news/inkling-2-mini/)
 locally on Apple silicon.
 
-The current version supports Inkling 2 Mini and Metal. It does not support image
-input, CUDA, or other models (yet).
+The current version supports text and image input with Inkling 2 Mini on Metal.
+Support for CUDA and other models is planned.
 
 ## Requirements
 
@@ -46,6 +46,8 @@ Enter one message per line. Replies appear as the model generates them.
 | Command | Action |
 | --- | --- |
 | `/help` | Show the commands. |
+| `/image PATH` | Attach a PNG or JPEG to the next message. |
+| `/image clear` | Remove the pending image. |
 | `/continue` | Continue a reply that reached the token limit. |
 | `/reset` | Clear the conversation. |
 | `/quit` | Exit. |
@@ -53,6 +55,10 @@ Enter one message per line. Replies appear as the model generates them.
 Chat uses a 262,144-token context, a 16,384-token reply limit, and effort `0.9` by default.
 The reply limit includes reasoning tokens. The context limit covers the full conversation.
 The KV cache uses FP16. Conversation history stays in memory until reset or exit.
+
+To ask about a picture, enter `/image /path/to/picture.png`, then enter your question.
+Each message can have one image. Images must use 8-bit channels and can be up to 4096 pixels on each side.
+rink keeps the original image size. Large images use more memory and take longer to process.
 
 Use `cargo run --release -- chat --help` to see all options.
 

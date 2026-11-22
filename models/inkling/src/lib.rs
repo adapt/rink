@@ -1,9 +1,12 @@
-//! Inkling 2 Mini's native checkpoint, looped text decoder, and accelerator kernels.
+//! Inkling 2 Mini's native checkpoint, image encoder, looped decoder, and accelerator kernels.
 pub mod checkpoint;
 pub mod config;
+pub mod image;
 pub mod kernels;
 pub mod model;
+pub mod vision;
 pub use config::Config;
+pub use image::Image;
 pub use model::{Inkling, KvCachePrecision};
 
 /// Single user-turn subset of the released chat template (no generation suffix).

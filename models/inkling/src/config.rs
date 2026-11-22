@@ -7,6 +7,111 @@ pub struct Config {
     pub model_type: String,
     pub eos_token_id: u32,
     pub text_config: TextConfig,
+    #[serde(default)]
+    pub vision_config: Option<VisionConfig>,
+    #[serde(default = "default_image_token")]
+    pub image_token_id: u32,
+}
+
+fn default_image_token() -> u32 {
+    200054
+}
+
+/// Native checkpoint dimensions for the still-image encoder.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct VisionConfig {
+    pub model_type: String,
+    pub text_hidden_size: usize,
+    pub native_patch_size: usize,
+    pub adapter_merge_size: usize,
+    pub projection_hidden_dim: usize,
+    pub projector_bias: bool,
+    pub hidden_size: usize,
+    pub num_hidden_layers: usize,
+    pub num_attention_heads: usize,
+    pub mlp_ratio: f32,
+    #[serde(default)]
+    pub intermediate_size: Option<usize>,
+    #[serde(default = "default_vision_channels")]
+    pub num_channels: usize,
+    pub posemb_grid_size: usize,
+    pub layer_norm_eps: f32,
+    #[serde(default = "default_vision_activation")]
+    pub hidden_act: String,
+    #[serde(default)]
+    pub rope_parameters: Option<serde_json::Value>,
+}
+
+fn default_vision_activation() -> String {
+    "gelu".into()
+}
+fn default_vision_channels() -> usize {
+    3
+}
+
+impl VisionConfig {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.hidden_act == "gelu",
+            "vision encoder requires GELU activation"
+        );
+        ensure!(self.num_channels == 3, "vision encoder requires RGB input");
+        if let Some(rope) = &self.rope_parameters {
+            ensure!(
+                rope.get("rope_type").and_then(|v| v.as_str()) == Some("axial")
+                    && rope.get("rope_theta").and_then(|v| v.as_f64()) == Some(10_000.)
+                    && rope.as_object().is_some_and(|v| v.len() == 2),
+                "vision encoder requires the native axial RoPE parameters"
+            );
+        }
+        ensure!(
+            self.model_type == "inkling2_vision",
+            "unsupported vision architecture"
+        );
+        ensure!(
+            self.native_patch_size == 20 && self.adapter_merge_size == 2,
+            "image processing requires 20-pixel patches and a 2x2 merge"
+        );
+        ensure!(
+            (1..=128).contains(&self.num_hidden_layers)
+                && (1..=4096).contains(&self.hidden_size)
+                && self.num_attention_heads > 0
+                && self.hidden_size % self.num_attention_heads == 0,
+            "invalid vision dimensions"
+        );
+        let dim = self.hidden_size / self.num_attention_heads;
+        ensure!(
+            dim % 8 == 0 && dim <= 128,
+            "vision head width must be a multiple of 8, at most 128"
+        );
+        ensure!(
+            self.mlp_ratio.is_finite()
+                && self.mlp_ratio >= 1.
+                && self.mlp_ratio <= 16.
+                && (self.hidden_size as f32 * self.mlp_ratio).fract() == 0.,
+            "invalid vision MLP ratio"
+        );
+        ensure!(
+            self.intermediate_size
+                .is_none_or(|n| n == self.intermediate_size()),
+            "vision intermediate size must match the MLP ratio"
+        );
+        ensure!(
+            (1..=128).contains(&self.posemb_grid_size)
+                && (1..=16384).contains(&self.projection_hidden_dim)
+                && (1..=8192).contains(&self.text_hidden_size)
+                && !self.projector_bias,
+            "unsupported vision projector or position grid"
+        );
+        ensure!(
+            self.layer_norm_eps.is_finite() && self.layer_norm_eps > 0.,
+            "invalid vision normalization epsilon"
+        );
+        Ok(())
+    }
+    pub fn intermediate_size(&self) -> usize {
+        (self.hidden_size as f32 * self.mlp_ratio) as usize
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -79,6 +184,17 @@ impl Config {
             "expected an original Inkling 2 Mini configuration"
         );
         self.text_config.validate()?;
+        if let Some(vision) = &self.vision_config {
+            vision.validate()?;
+            ensure!(
+                vision.text_hidden_size == self.text_config.hidden_size,
+                "vision and text hidden sizes differ"
+            );
+            ensure!(
+                (self.image_token_id as usize) < self.text_config.unpadded_vocab_size,
+                "image token is outside vocabulary"
+            );
+        }
         ensure!(
             (self.eos_token_id as usize) < self.text_config.unpadded_vocab_size,
             "EOS is outside vocabulary"

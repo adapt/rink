@@ -14,6 +14,7 @@ memmap2.workspace = true
 safetensors.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+image = { version = "=0.25.6", default-features = false, features = ["png", "jpeg"] }
 
 [dev-dependencies]
 rink-metal.workspace = true

@@ -6,7 +6,11 @@ use std::collections::HashMap;
 
 pub const SOURCE: KernelSource<'static> = KernelSource {
     name: "inkling-2-mini-v1",
-    metal: Some(include_str!("kernels.metal")),
+    metal: Some(concat!(
+        include_str!("kernels.metal"),
+        "\n",
+        include_str!("vision.metal")
+    )),
     cuda: None,
     subgroup_size: Some(32),
 };
@@ -35,6 +39,12 @@ impl<A: Accelerator> Kernels<A> {
     pub fn compile(device: &mut A) -> Result<Self> {
         let mut entries = HashMap::new();
         for name in [
+            "vision_positions",
+            "vision_norm",
+            "vision_bias",
+            "vision_residual",
+            "vision_rope",
+            "vision_attention",
             "nvfp4_decode_table",
             "expert_matvec_nvfp4",
             "expert_swiglu_nvfp4",

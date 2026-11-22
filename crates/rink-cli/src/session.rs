@@ -57,9 +57,22 @@ impl<M: AutoregressiveModel> Session<M> {
     }
 
     pub fn start(&mut self, tokens: &[u32], max_tokens: usize) -> Result<()> {
+        self.start_with(tokens, max_tokens, |model, tokens| {
+            model.prefill_greedy(tokens)
+        })
+    }
+
+    /// A model-specific prefill (for example, image embeddings) uses the same
+    /// budget, continuation and failure rules as a text turn.
+    pub fn start_with(
+        &mut self,
+        tokens: &[u32],
+        max_tokens: usize,
+        prefill: impl FnOnce(&mut M, &[u32]) -> Result<u32>,
+    ) -> Result<()> {
         self.check_prompt(tokens, max_tokens)?;
         self.state = State::Failed;
-        self.state = State::Generating(self.model.prefill_greedy(tokens)?);
+        self.state = State::Generating(prefill(&mut self.model, tokens)?);
         Ok(())
     }
 
@@ -207,6 +220,26 @@ mod tests {
         s.reset().unwrap();
         s.model.fail_at = Some(1);
         assert!(s.start(&[1, 1], 3).is_err());
+        assert!(s.start(&[1], 3).is_err());
+        s.reset().unwrap();
+        s.start(&[1], 3).unwrap();
+    }
+
+    #[test]
+    fn custom_prefill_checks_budget_and_requires_reset_after_failure() {
+        let mut s = session(8);
+        assert!(
+            s.start_with(&[1; 6], 3, |_, _| panic!("must reject before prefill"))
+                .is_err()
+        );
+        s.start_with(&[1], 3, |model, tokens| model.prefill_greedy(tokens))
+            .unwrap();
+        assert_eq!(s.next_token().unwrap(), Some(2));
+        s.reset().unwrap();
+        assert!(
+            s.start_with(&[1], 3, |_, _| anyhow::bail!("injected image failure"))
+                .is_err()
+        );
         assert!(s.start(&[1], 3).is_err());
         s.reset().unwrap();
         s.start(&[1], 3).unwrap();

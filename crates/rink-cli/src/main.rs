@@ -75,6 +75,9 @@ enum Command {
         model: PathBuf,
         #[arg(long)]
         prompt: String,
+        /// Attach one local PNG or JPEG image to the prompt.
+        #[arg(long, conflicts_with = "raw")]
+        image: Option<PathBuf>,
         #[arg(long, default_value_t = 128)]
         max_tokens: usize,
         /// Maximum cached sequence length (prompt plus generation).
@@ -162,6 +165,7 @@ fn main() -> Result<()> {
         Command::Generate {
             model,
             prompt,
+            image,
             max_tokens,
             context,
             kv_cache,
@@ -173,7 +177,9 @@ fn main() -> Result<()> {
                 effort.is_finite() && (0.0..=0.99).contains(&effort),
                 "--effort must be in 0..=0.99"
             );
-            generate(model, prompt, max_tokens, context, raw, effort, kv_cache)
+            generate(
+                model, prompt, image, max_tokens, context, raw, effort, kv_cache,
+            )
         }
         Command::Chat {
             model,
@@ -206,9 +212,11 @@ fn main() -> Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
 fn generate(
     _: PathBuf,
     _: String,
+    _: Option<PathBuf>,
     _: usize,
     _: usize,
     _: bool,
@@ -219,9 +227,11 @@ fn generate(
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
 fn generate(
     directory: PathBuf,
     prompt: String,
+    image: Option<PathBuf>,
     max_tokens: usize,
     context: usize,
     raw: bool,
@@ -233,7 +243,10 @@ fn generate(
     use std::{io::Write, time::Instant};
     let tokenizer = tokenizers::Tokenizer::from_file(directory.join("tokenizer.json"))
         .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
-    let rendered = if raw {
+    let image = image.map(rink_inkling::Image::open).transpose()?;
+    let rendered = if let Some(image) = &image {
+        rink_inkling::image::image_prompt(&prompt, image.token_count(), effort)?
+    } else if raw {
         prompt
     } else {
         rink_inkling::chat_prompt(&prompt, effort)?
@@ -265,7 +278,12 @@ fn generate(
         rink_inkling::Inkling::load_with_kv_cache(device, &directory, context, kv_cache)?;
     eprintln!("Prefilling {} tokens", tokens.len());
     let start = Instant::now();
-    let mut next = model.prefill_greedy(tokens).context("prefilling prompt")?;
+    let mut next = if let Some(image) = &image {
+        model.prefill_image_greedy(tokens, image)
+    } else {
+        model.prefill_greedy(tokens)
+    }
+    .context("prefilling prompt")?;
     eprintln!(
         "Prefill: {:.2}s; generating greedily",
         start.elapsed().as_secs_f64()

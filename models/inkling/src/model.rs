@@ -1,12 +1,17 @@
 use crate::{
     checkpoint::Checkpoint,
     config::{Config, TextConfig, Visit},
+    image::Image,
     kernels::{Kernels, Params},
+    vision::VisionEncoder,
 };
 use anyhow::{Context, Result, bail, ensure};
 use rink_core::{Accelerator, AutoregressiveModel, Buffer};
 use safetensors::Dtype;
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 /// Storage precision for keys and values; attention arithmetic stays float32.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -89,6 +94,8 @@ pub struct Inkling<A: Accelerator> {
     device: A,
     kernels: Kernels<A>,
     config: Config,
+    directory: PathBuf,
+    vision: Option<VisionEncoder<A>>,
     weights: HashMap<String, Weight<A::Buffer>>,
     experts: Vec<ExpertPair<A::Buffer>>,
     caches: Vec<Cache<A::Buffer>>,
@@ -161,6 +168,8 @@ impl<A: Accelerator> Inkling<A> {
             device,
             kernels,
             config,
+            directory: directory.to_owned(),
+            vision: None,
             weights,
             experts,
             caches: Vec::new(),
@@ -965,6 +974,13 @@ impl<A: Accelerator> Inkling<A> {
         self.moe(&x, &residual, visit)
     }
     fn hidden(&mut self, tokens: &[u32]) -> Result<A::Buffer> {
+        self.hidden_with_image(tokens, None)
+    }
+    fn hidden_with_image(
+        &mut self,
+        tokens: &[u32],
+        image: Option<(&A::Buffer, usize, usize, usize)>,
+    ) -> Result<A::Buffer> {
         self.scratch_cursor = 0;
         self.batch = tokens.len();
         let c = self.config.text_config.clone();
@@ -991,6 +1007,17 @@ impl<A: Accelerator> Inkling<A> {
             )?;
         }
         let mut hidden = self.norm(&hidden, Some("embed_norm.weight"), c.hidden_size, 1)?;
+        // The reference normalizes text embeddings before replacing image
+        // placeholders. Projected vision features must bypass embed_norm.
+        if let Some((features, src, dst, count)) = image {
+            self.copy(
+                &hidden,
+                dst * c.hidden_size,
+                features,
+                src * c.hidden_size,
+                count * c.hidden_size,
+            )?;
+        }
         let bank_size = (c.num_hidden_layers.div_ceil(c.n_layers_per_attn_res_block) + 1)
             * c.hidden_size
             * self.batch;
@@ -1145,6 +1172,69 @@ impl<A: Accelerator> Inkling<A> {
         }
         Ok(hidden.expect("nonempty prompt"))
     }
+
+    fn prefill_image_hidden(&mut self, tokens: &[u32], image: &Image) -> Result<A::Buffer> {
+        self.validate_tokens(tokens)?;
+        let config = self
+            .config
+            .vision_config
+            .as_ref()
+            .context("checkpoint has no vision encoder")?;
+        let start = tokens
+            .iter()
+            .position(|&t| t == self.config.image_token_id)
+            .context("prompt has no image placeholders")?;
+        let end = start
+            .checked_add(image.token_count())
+            .context("image token count overflow")?;
+        ensure!(
+            end <= tokens.len()
+                && tokens[start..end]
+                    .iter()
+                    .all(|&t| t == self.config.image_token_id)
+                && !tokens[end..].contains(&self.config.image_token_id),
+            "prompt must contain one contiguous image placeholder per image tile"
+        );
+        self.failed = true;
+        if self.vision.is_none() {
+            let checkpoint = Checkpoint::open(&self.directory)?;
+            self.vision = Some(VisionEncoder::load(&mut self.device, &checkpoint, config)?);
+        }
+        let features =
+            self.vision
+                .as_ref()
+                .unwrap()
+                .encode(&mut self.device, &self.kernels, image)?;
+        let mut hidden = None;
+        for (i, chunk) in tokens.chunks(32).enumerate() {
+            let offset = i * 32;
+            let lo = start.max(offset);
+            let hi = end.min(offset + chunk.len());
+            let replacement = (lo < hi).then(|| (&features, lo - start, lo - offset, hi - lo));
+            hidden = Some(self.hidden_with_image(chunk, replacement)?);
+            self.position += chunk.len();
+            if offset + chunk.len() < tokens.len() {
+                self.device.synchronize()?;
+            }
+        }
+        Ok(hidden.expect("nonempty prompt"))
+    }
+
+    /// Append a mixed image/text prompt. Image placeholders must be contiguous
+    /// and match `image.token_count()`. Previous turns remain in the KV cache.
+    pub fn prefill_image(&mut self, tokens: &[u32], image: &Image) -> Result<Vec<f32>> {
+        let hidden = self.prefill_image_hidden(tokens, image)?;
+        let result = self.logits(&hidden)?;
+        self.failed = false;
+        Ok(result)
+    }
+
+    pub fn prefill_image_greedy(&mut self, tokens: &[u32], image: &Image) -> Result<u32> {
+        let hidden = self.prefill_image_hidden(tokens, image)?;
+        let result = self.select(&hidden)?;
+        self.failed = false;
+        Ok(result)
+    }
 }
 
 impl<A: Accelerator> AutoregressiveModel for Inkling<A> {
@@ -1247,7 +1337,7 @@ fn tensor<'a>(
     );
     Ok(tensor)
 }
-fn floats(t: &safetensors::tensor::TensorView<'_>) -> Result<Vec<f32>> {
+pub(crate) fn floats(t: &safetensors::tensor::TensorView<'_>) -> Result<Vec<f32>> {
     Ok(match t.dtype() {
         Dtype::F32 => t
             .data()
