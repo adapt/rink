@@ -1,0 +1,311 @@
+{
+  "date": "2026-11-22",
+  "implementation_revision": "1966113",
+  "model_revision": "6e7c8248f75265bdd4fbab5273304243b5d8c2cb",
+  "device": "Apple M4 Max",
+  "gpu_cores": 40,
+  "physical_memory_bytes": 51539607552,
+  "status": "interrupted_at_user_request",
+  "termination_signal": "SIGINT",
+  "method": "Real full-model prefill from an empty cache with the native checkpoint, FP16 KV storage, all three passes, no drafter and a 2048-token maximum batch. Stopped at the user's request. Only completed stderr timing windows are available; rates and cumulative times are rounded to one decimal place. The final reported token count excludes work in the interrupted next window. No completed prompt throughput, near-256K throughput, decode measurement or final Metal allocation statistics. Loading and warmup are excluded from these prefill windows. Command-buffer timing enabled; per-kernel profiling disabled. One GPU benchmark at a time on AC power in a normal desktop session.",
+  "command": "target/release/rink bench --model checkpoints/inkling-2-mini --context 262144 --prompt-tokens 262016 --decode-tokens 128 --repetitions 1 --prefill-window 4096",
+  "context_capacity": 262144,
+  "target_prompt_tokens": 262016,
+  "planned_decode_tokens": 128,
+  "completed_decode_tokens": 0,
+  "kv_cache": "f16",
+  "prefill_batch": 2048,
+  "last_reported_token": 155648,
+  "prefill_windows": [
+    {
+      "start_token": 0,
+      "end_token": 4096,
+      "tokens": 4096,
+      "tokens_per_second": 328.5,
+      "elapsed_seconds": 12.5
+    },
+    {
+      "start_token": 4096,
+      "end_token": 8192,
+      "tokens": 4096,
+      "tokens_per_second": 283.8,
+      "elapsed_seconds": 26.9
+    },
+    {
+      "start_token": 8192,
+      "end_token": 12288,
+      "tokens": 4096,
+      "tokens_per_second": 237.3,
+      "elapsed_seconds": 44.2
+    },
+    {
+      "start_token": 12288,
+      "end_token": 16384,
+      "tokens": 4096,
+      "tokens_per_second": 201.3,
+      "elapsed_seconds": 64.5
+    },
+    {
+      "start_token": 16384,
+      "end_token": 20480,
+      "tokens": 4096,
+      "tokens_per_second": 203.6,
+      "elapsed_seconds": 84.6
+    },
+    {
+      "start_token": 20480,
+      "end_token": 24576,
+      "tokens": 4096,
+      "tokens_per_second": 179.5,
+      "elapsed_seconds": 107.4
+    },
+    {
+      "start_token": 24576,
+      "end_token": 28672,
+      "tokens": 4096,
+      "tokens_per_second": 160.1,
+      "elapsed_seconds": 133.0
+    },
+    {
+      "start_token": 28672,
+      "end_token": 32768,
+      "tokens": 4096,
+      "tokens_per_second": 149.2,
+      "elapsed_seconds": 160.5
+    },
+    {
+      "start_token": 32768,
+      "end_token": 36864,
+      "tokens": 4096,
+      "tokens_per_second": 142.4,
+      "elapsed_seconds": 189.2
+    },
+    {
+      "start_token": 36864,
+      "end_token": 40960,
+      "tokens": 4096,
+      "tokens_per_second": 134.1,
+      "elapsed_seconds": 219.8
+    },
+    {
+      "start_token": 40960,
+      "end_token": 45056,
+      "tokens": 4096,
+      "tokens_per_second": 128.1,
+      "elapsed_seconds": 251.8
+    },
+    {
+      "start_token": 45056,
+      "end_token": 49152,
+      "tokens": 4096,
+      "tokens_per_second": 120.7,
+      "elapsed_seconds": 285.7
+    },
+    {
+      "start_token": 49152,
+      "end_token": 53248,
+      "tokens": 4096,
+      "tokens_per_second": 114.5,
+      "elapsed_seconds": 321.5
+    },
+    {
+      "start_token": 53248,
+      "end_token": 57344,
+      "tokens": 4096,
+      "tokens_per_second": 107.6,
+      "elapsed_seconds": 359.5
+    },
+    {
+      "start_token": 57344,
+      "end_token": 61440,
+      "tokens": 4096,
+      "tokens_per_second": 107.8,
+      "elapsed_seconds": 397.5
+    },
+    {
+      "start_token": 61440,
+      "end_token": 65536,
+      "tokens": 4096,
+      "tokens_per_second": 98.8,
+      "elapsed_seconds": 439.0
+    },
+    {
+      "start_token": 65536,
+      "end_token": 69632,
+      "tokens": 4096,
+      "tokens_per_second": 96.2,
+      "elapsed_seconds": 481.5
+    },
+    {
+      "start_token": 69632,
+      "end_token": 73728,
+      "tokens": 4096,
+      "tokens_per_second": 91.4,
+      "elapsed_seconds": 526.4
+    },
+    {
+      "start_token": 73728,
+      "end_token": 77824,
+      "tokens": 4096,
+      "tokens_per_second": 87.5,
+      "elapsed_seconds": 573.2
+    },
+    {
+      "start_token": 77824,
+      "end_token": 81920,
+      "tokens": 4096,
+      "tokens_per_second": 83.9,
+      "elapsed_seconds": 622.0
+    },
+    {
+      "start_token": 81920,
+      "end_token": 86016,
+      "tokens": 4096,
+      "tokens_per_second": 81.1,
+      "elapsed_seconds": 672.5
+    },
+    {
+      "start_token": 86016,
+      "end_token": 90112,
+      "tokens": 4096,
+      "tokens_per_second": 78.3,
+      "elapsed_seconds": 724.8
+    },
+    {
+      "start_token": 90112,
+      "end_token": 94208,
+      "tokens": 4096,
+      "tokens_per_second": 73.8,
+      "elapsed_seconds": 780.3
+    },
+    {
+      "start_token": 94208,
+      "end_token": 98304,
+      "tokens": 4096,
+      "tokens_per_second": 72.8,
+      "elapsed_seconds": 836.6
+    },
+    {
+      "start_token": 98304,
+      "end_token": 102400,
+      "tokens": 4096,
+      "tokens_per_second": 70.4,
+      "elapsed_seconds": 894.7
+    },
+    {
+      "start_token": 102400,
+      "end_token": 106496,
+      "tokens": 4096,
+      "tokens_per_second": 68.2,
+      "elapsed_seconds": 954.8
+    },
+    {
+      "start_token": 106496,
+      "end_token": 110592,
+      "tokens": 4096,
+      "tokens_per_second": 65.8,
+      "elapsed_seconds": 1017.0
+    },
+    {
+      "start_token": 110592,
+      "end_token": 114688,
+      "tokens": 4096,
+      "tokens_per_second": 64.7,
+      "elapsed_seconds": 1080.3
+    },
+    {
+      "start_token": 114688,
+      "end_token": 118784,
+      "tokens": 4096,
+      "tokens_per_second": 63.4,
+      "elapsed_seconds": 1144.9
+    },
+    {
+      "start_token": 118784,
+      "end_token": 122880,
+      "tokens": 4096,
+      "tokens_per_second": 61.2,
+      "elapsed_seconds": 1211.8
+    },
+    {
+      "start_token": 122880,
+      "end_token": 126976,
+      "tokens": 4096,
+      "tokens_per_second": 58.7,
+      "elapsed_seconds": 1281.6
+    },
+    {
+      "start_token": 126976,
+      "end_token": 131072,
+      "tokens": 4096,
+      "tokens_per_second": 56.2,
+      "elapsed_seconds": 1354.5
+    },
+    {
+      "start_token": 131072,
+      "end_token": 135168,
+      "tokens": 4096,
+      "tokens_per_second": 57.0,
+      "elapsed_seconds": 1426.4
+    },
+    {
+      "start_token": 135168,
+      "end_token": 139264,
+      "tokens": 4096,
+      "tokens_per_second": 55.3,
+      "elapsed_seconds": 1500.5
+    },
+    {
+      "start_token": 139264,
+      "end_token": 143360,
+      "tokens": 4096,
+      "tokens_per_second": 54.0,
+      "elapsed_seconds": 1576.3
+    },
+    {
+      "start_token": 143360,
+      "end_token": 147456,
+      "tokens": 4096,
+      "tokens_per_second": 52.6,
+      "elapsed_seconds": 1654.2
+    },
+    {
+      "start_token": 147456,
+      "end_token": 151552,
+      "tokens": 4096,
+      "tokens_per_second": 51.3,
+      "elapsed_seconds": 1734.0
+    },
+    {
+      "start_token": 151552,
+      "end_token": 155648,
+      "tokens": 4096,
+      "tokens_per_second": 50.4,
+      "elapsed_seconds": 1815.2
+    }
+  ],
+  "system_memory_samples": {
+    "method": "System-wide vm_stat and vm.swapusage sampled every 15 seconds from before model loading. Paging includes other applications and cannot be attributed to rink. These counters do not measure Metal allocation.",
+    "page_size_bytes": 16384,
+    "sample_count": 125,
+    "first_sample_utc": "2026-11-22T21:27:24.924602+00:00",
+    "last_sample_utc": "2026-11-22T21:58:26.232718+00:00",
+    "first_counters": {
+      "Swapins": 1979834,
+      "Swapouts": 3951748,
+      "Pageouts": 46608
+    },
+    "last_counters": {
+      "Swapins": 2067629,
+      "Swapouts": 3961121,
+      "Pageouts": 47020
+    },
+    "counter_deltas_pages": {
+      "Swapins": 87795,
+      "Swapouts": 9373,
+      "Pageouts": 412
+    },
+    "initial_swap_usage": "vm.swapusage: total = 10240.00M  used = 9392.06M  free = 847.94M  (encrypted)",
+    "final_swap_usage": "vm.swapusage: total = 9216.00M  used = 8130.50M  free = 1085.50M  (encrypted)"
+  }
+}

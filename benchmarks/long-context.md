@@ -58,6 +58,26 @@ At 256K history, the isolated partition kernel takes 94.16 ms instead of
 of 3.69 ms. These are individual attention-kernel timings, not full-model token
 rates. [Kernel timings and exact comparisons](m4-max-prefill-budget-kernels.json)
 
+## Long-context run
+
+A real full-model run starts with an empty cache and a 262,016-token prompt.
+It is stopped at the user's request after the last reported position of
+155,648 tokens. The completed timing windows include:
+
+| Prompt position at end of window | Tokens in window | Prefill tokens/s |
+| ---: | ---: | ---: |
+| 16,384 | 4,096 | 201.3 |
+| 65,536 | 4,096 | 98.8 |
+| 131,072 | 4,096 | 56.2 |
+| 155,648 | 4,096 | 50.4 |
+
+The first 155,648 tokens take 1,815.2 seconds of prefill. The batch limit stays
+at 2,048. These values come from stderr and are rounded to one decimal place.
+The final count excludes work in the interrupted next window. There is no
+completed near-256K prefill or decode measurement, and no final Metal allocation
+report from this run. System-wide paging occurs during the run; it cannot be
+attributed to rink from these samples. [Completed windows and method](m4-max-prefill-long-partial.json)
+
 ## Image input
 
 The original 5,344 × 3,044 image produces 10,318 image tokens and a 10,342-token
@@ -96,6 +116,10 @@ With the 2,048-token default, the audited peak is:
 | 65,536 | 24.49 GiB |
 | 262,144 | 31.06 GiB |
 | 1,048,576 | 57.35 GiB |
+
+For this checkpoint with FP16 KV storage, each extra 65,536 tokens of capacity
+adds 2 GiB of full-attention KV storage and 195 MiB of attention workspace.
+The other text buffers stay the same at these capacities and batch settings.
 
 Each audit reaches its peak in the first full batch and stays within that peak
 through the end of the configured context. Smaller prompts can use less
@@ -148,6 +172,12 @@ Timing windows follow existing chunk synchronization points. Recording a window
 does not split a batch or add a vocabulary projection. The final window includes
 the final projection. A window's rate describes that part of prefill; it is
 separate from average prompt throughput and single-token decode throughput.
+
+The full-context benchmark starts with an empty KV cache. Chat keeps that cache
+between turns. With 250K tokens already cached, a new 200-token message runs only
+those 200 tokens through the model. Full-attention layers still read the cached
+history for each new query, so a longer conversation slows both prefill and
+generation. Resetting or restarting chat clears the cache.
 
 ## EXO's reported rates
 
