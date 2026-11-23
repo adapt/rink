@@ -174,6 +174,26 @@ impl Codec {
         )?;
         Ok(out)
     }
+
+    /// The release template permits image parts on named tool messages. The
+    /// processor expands the image marker to one placeholder per visual tile.
+    pub fn tool_image(&self, name: &str, image_tokens: usize) -> Result<Vec<u32>> {
+        ensure!(valid_name(name), "invalid tool name");
+        ensure!(
+            image_tokens > 0
+                && image_tokens
+                    <= (crate::image::MAX_IMAGE_DIMENSION as usize)
+                        .div_ceil(40)
+                        .pow(2),
+            "invalid image token count"
+        );
+        let mut out = vec![self.special.tool];
+        self.ordinary(&mut out, name)?;
+        out.push(self.special.image);
+        out.extend(std::iter::repeat_n(self.special.patch, image_tokens));
+        out.push(self.special.end);
+        Ok(out)
+    }
 }
 
 fn valid_name(name: &str) -> bool {

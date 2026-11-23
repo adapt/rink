@@ -31,6 +31,25 @@ fn preprocessing_matches_reference_and_validates_inputs() {
 }
 
 #[test]
+fn snapshot_images_match_path_loading_and_header_token_counts() {
+    use std::io::Cursor;
+    for name in ["input.png", "oriented.jpg"] {
+        let path = fixture().join(name);
+        let bytes = std::fs::read(&path).unwrap();
+        let from_path = Image::open(&path).unwrap();
+        let from_snapshot = Image::read(Cursor::new(&bytes)).unwrap();
+        assert_eq!(from_path.patches(), from_snapshot.patches());
+        assert_eq!(
+            Image::token_count_from_reader(Cursor::new(&bytes)).unwrap(),
+            from_path.token_count()
+        );
+    }
+    let bad = std::fs::read(fixture().join("unsupported-16bit.png")).unwrap();
+    assert!(Image::token_count_from_reader(Cursor::new(&bad)).is_err());
+    assert!(Image::read(Cursor::new(&bad)).is_err());
+}
+
+#[test]
 fn image_dimension_limit_applies_on_each_axis() {
     // Narrow images exercise both boundaries without allocating a 16K square.
     for (width, height) in [(16_384, 1), (1, 16_384), (16_385, 1), (1, 16_385)] {

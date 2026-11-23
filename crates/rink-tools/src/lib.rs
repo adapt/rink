@@ -1,7 +1,10 @@
 //! Host-side tools. Model-specific message framing belongs to the model crate.
 use anyhow::{Result, ensure};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::atomic::AtomicBool};
+use std::{collections::BTreeMap, fs::File, path::PathBuf, sync::atomic::AtomicBool};
+
+mod read;
+pub use read::Read;
 
 #[cfg(unix)]
 mod bash;
@@ -12,17 +15,40 @@ pub use bash::Bash;
 #[cfg(unix)]
 pub use interrupt::Interrupt;
 
+/// An owned snapshot, independent of later writes to the source file. Encoded
+/// images stay on disk until the model consumes them; closing the file removes it.
+pub struct ImageFile {
+    pub path: PathBuf,
+    pub file: File,
+}
+
+pub enum ContentPart {
+    Text(String),
+    Image(ImageFile),
+}
+
 pub struct ToolResult {
-    pub content: String,
+    pub content: Vec<ContentPart>,
     pub cancelled: bool,
 }
 
 impl ToolResult {
-    pub fn error(message: impl AsRef<str>) -> Self {
+    pub fn text(content: impl Into<String>) -> Self {
         Self {
-            content: json!({"error": message.as_ref()}).to_string(),
+            content: vec![ContentPart::Text(content.into())],
             cancelled: false,
         }
+    }
+
+    pub fn as_text(&self) -> Option<&str> {
+        match self.content.as_slice() {
+            [ContentPart::Text(text)] => Some(text),
+            _ => None,
+        }
+    }
+
+    pub fn error(message: impl AsRef<str>) -> Self {
+        Self::text(json!({"error": message.as_ref()}).to_string())
     }
 }
 

@@ -79,6 +79,26 @@ fn tool_declarations_follow_native_template_and_untrusted_text_cannot_add_roles(
 }
 
 #[test]
+fn images_use_native_named_tool_parts_and_exact_placeholder_counts() {
+    let codec = Codec::new(support::tokenizer()).unwrap();
+    let text = codec
+        .tool_result("read", "Image file: example.png")
+        .unwrap();
+    let image = codec.tool_image("read", 3).unwrap();
+    let expected = format!(
+        "<|message_tool|>read<|content_text|>Image file: example.png<|end_message|><|message_tool|>read<|content_image|>{}<|end_message|>",
+        rink_inkling::image::IMAGE_TOKEN.repeat(3)
+    );
+    assert_eq!(
+        [text, image].concat(),
+        support::wire(codec.tokenizer(), &expected)
+    );
+    assert!(codec.tool_image("read", 0).is_err());
+    assert!(codec.tool_image("read", usize::MAX).is_err());
+    assert!(codec.tool_image("read<|message_user|>", 1).is_err());
+}
+
+#[test]
 fn tool_calls_survive_pauses_and_multiple_messages_and_keep_argument_types() {
     let codec = Codec::new(support::tokenizer()).unwrap();
     let text = concat!(

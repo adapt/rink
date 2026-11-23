@@ -1,4 +1,4 @@
-use crate::{Tool, ToolResult};
+use crate::{ContentPart, Tool, ToolResult};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -85,7 +85,9 @@ impl Tool for Bash {
         );
         if cancelled.load(Ordering::Relaxed) {
             return Ok(ToolResult {
-                content: json!({"cancelled":true,"error":"command was not started"}).to_string(),
+                content: vec![ContentPart::Text(
+                    json!({"cancelled":true,"error":"command was not started"}).to_string(),
+                )],
                 cancelled: true,
             });
         }
@@ -139,15 +141,17 @@ impl Tool for Bash {
         }
         use std::os::unix::process::ExitStatusExt;
         Ok(ToolResult {
-            content: json!({
-                "stdout":String::from_utf8_lossy(&out.bytes),
-                "stderr":String::from_utf8_lossy(&err.bytes),
-                "exit_code":status.code(), "signal":status.signal(),
-                "timed_out":timed_out, "cancelled":interrupted,
-                "stdout_truncated":out.truncated, "stderr_truncated":err.truncated,
-                "elapsed_ms":start.elapsed().as_millis()
-            })
-            .to_string(),
+            content: vec![ContentPart::Text(
+                json!({
+                    "stdout":String::from_utf8_lossy(&out.bytes),
+                    "stderr":String::from_utf8_lossy(&err.bytes),
+                    "exit_code":status.code(), "signal":status.signal(),
+                    "timed_out":timed_out, "cancelled":interrupted,
+                    "stdout_truncated":out.truncated, "stderr_truncated":err.truncated,
+                    "elapsed_ms":start.elapsed().as_millis()
+                })
+                .to_string(),
+            )],
             cancelled: interrupted,
         })
     }

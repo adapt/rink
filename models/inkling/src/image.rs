@@ -2,7 +2,11 @@
 //! composite transparency on its checkerboard, and pad the right and bottom edges.
 use anyhow::{Context, Result, ensure};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
-use std::path::Path;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, Seek},
+    path::Path,
+};
 
 pub const IMAGE_TOKEN: &str = "<|unused_200054|>";
 pub const MAX_IMAGE_DIMENSION: u32 = 16_384;
@@ -17,9 +21,30 @@ pub struct Image {
 impl Image {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let mut reader = ImageReader::open(path)
-            .with_context(|| format!("opening image {}", path.display()))?
-            .with_guessed_format()?;
+        let file = File::open(path).with_context(|| format!("opening image {}", path.display()))?;
+        Self::read(BufReader::new(file))
+    }
+
+    /// Decode an owned tool snapshot with exactly the same preprocessing as /image.
+    pub fn read(reader: impl BufRead + Seek) -> Result<Self> {
+        let mut decoder = Self::decoder(reader)?;
+        let orientation = decoder.orientation()?;
+        let mut decoded = DynamicImage::from_decoder(decoder)?;
+        decoded.apply_orientation(orientation);
+        let rgba = decoded.into_rgba8();
+        Self::from_rgba(rgba.width(), rgba.height(), rgba.into_raw())
+    }
+
+    /// Inspect dimensions and channel depth before allocating decoded pixels.
+    /// EXIF rotation swaps axes but preserves this tile count.
+    pub fn token_count_from_reader(reader: impl BufRead + Seek) -> Result<usize> {
+        let decoder = Self::decoder(reader)?;
+        let (width, height) = decoder.dimensions();
+        Ok(width.div_ceil(40) as usize * height.div_ceil(40) as usize)
+    }
+
+    fn decoder<'a>(reader: impl BufRead + Seek + 'a) -> Result<impl ImageDecoder + 'a> {
+        let mut reader = ImageReader::new(reader).with_guessed_format()?;
         ensure!(
             matches!(reader.format(), Some(ImageFormat::Png | ImageFormat::Jpeg)),
             "image must be a PNG or JPEG file"
@@ -31,7 +56,7 @@ impl Image {
         // 512 MiB budget is smaller than a 16K image's decoded pixels.
         limits.max_alloc = Some(u64::from(MAX_IMAGE_DIMENSION).pow(2) * 8);
         reader.limits(limits);
-        let mut decoder = reader.into_decoder().with_context(|| {
+        let decoder = reader.into_decoder().with_context(|| {
             format!("decoding image (maximum dimension is {MAX_IMAGE_DIMENSION} pixels)")
         })?;
         let color = decoder.color_type();
@@ -39,11 +64,13 @@ impl Image {
             color.bits_per_pixel() == u16::from(color.channel_count()) * 8,
             "image must use 8-bit channels"
         );
-        let orientation = decoder.orientation()?;
-        let mut decoded = DynamicImage::from_decoder(decoder)?;
-        decoded.apply_orientation(orientation);
-        let rgba = decoded.into_rgba8();
-        Self::from_rgba(rgba.width(), rgba.height(), rgba.into_raw())
+        let (width, height) = decoder.dimensions();
+        ensure!(
+            (1..=MAX_IMAGE_DIMENSION).contains(&width)
+                && (1..=MAX_IMAGE_DIMENSION).contains(&height),
+            "image dimensions must be in 1..={MAX_IMAGE_DIMENSION}"
+        );
+        Ok(decoder)
     }
 
     pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self> {

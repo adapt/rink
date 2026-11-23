@@ -71,7 +71,25 @@ Use `cargo run --release -- chat --help` to see all options.
 The model configuration allows up to 1,048,576 tokens. This context does not fit
 in 48 GB of unified memory.
 
-## Bash tool
+## Tools
+
+Enable file reading and Bash:
+
+```sh
+cargo run --release -- chat --tool read,bash --cwd /path/to/project
+```
+
+Ask the model to read a file by path. `read` returns UTF-8 text with line numbers,
+or adds a PNG or JPEG directly to the model's image context. Relative paths use
+`--cwd`; `~/` uses your home directory. Use `--tool read` to enable file reading
+alone. PDFs and other binary formats are not supported.
+
+For text, the model can select `start_line` (starting at 1) and `max_lines` (200 by
+default, up to 2,000). Long results include a continuation line or a truncation
+message. `--tool-output-bytes` sets the text byte limit. Images use the same
+pixel limits and processing as `/image`, with a 2 GiB limit on the encoded file.
+Images must fit as complete inputs in the remaining context. They are processed
+one at a time. Temporary image snapshots are removed after use.
 
 Enable Bash so the model can run commands:
 
@@ -85,8 +103,8 @@ Shell variables and directory changes do not carry over to the next call.
 Commands cannot read terminal input. Background processes in the command's process
 group stop when the call ends. Chat shows each command and its output.
 
-The defaults are a 120-second timeout, 16 KiB of captured output per call (split
-between stdout and stderr), and eight tool rounds per user message. Set these with
+The defaults are a 120-second tool timeout, 16 KiB of text per call (Bash splits
+this between stdout and stderr), and eight tool rounds per user message. Set these with
 `--tool-timeout-ms`, `--tool-output-bytes`, and `--max-tool-rounds`.
 Press Ctrl-C during a command to cancel it. Use `/continue` to let the model read
 the result. `/continue` also resumes a reply that reached its token limit.

@@ -47,21 +47,37 @@ pub fn run(
     let codec = Codec::new(tokenizer)?;
     let eos_token = codec.eos();
     let mut registry = rink_tools::Registry::default();
-    if tools.tool.is_some() {
-        let bash = rink_tools::Bash::new(
-            tools.cwd.unwrap_or(std::env::current_dir()?),
-            std::time::Duration::from_millis(tools.tool_timeout_ms),
-            tools.tool_output_bytes as usize,
-        )?;
+    if !tools.tool.is_empty() {
+        let cwd = tools
+            .cwd
+            .unwrap_or(std::env::current_dir()?)
+            .canonicalize()?;
+        let timeout = std::time::Duration::from_millis(tools.tool_timeout_ms);
+        if tools.tool.iter().any(|name| name == "bash") {
+            registry.register(rink_tools::Bash::new(
+                &cwd,
+                timeout,
+                tools.tool_output_bytes as usize,
+            )?)?;
+        }
+        if tools.tool.iter().any(|name| name == "read") {
+            registry.register(rink_tools::Read::new(
+                &cwd,
+                timeout,
+                tools.tool_output_bytes as usize,
+            )?)?;
+        }
         eprintln!(
-            "Bash enabled with direct host access in {}. Ctrl-C cancels a running command.",
-            bash.cwd().display()
+            "Tools {} enabled with direct host access in {}. Ctrl-C cancels a running tool.",
+            tools.tool.join(", "),
+            cwd.display()
         );
-        registry.register(bash)?;
     }
     let definitions = registry.definitions();
-    let mut tool_loop = ToolLoop::new(registry, tools.max_tool_rounds as usize);
     let config = rink_inkling::Config::load(directory.join("config.json"))?;
+    let images_supported =
+        config.vision_config.is_some() && codec.image_token() == config.image_token_id;
+    let mut tool_loop = ToolLoop::new(registry, tools.max_tool_rounds as usize, images_supported);
     anyhow::ensure!(
         config.eos_token_id == eos_token,
         "tokenizer EOS does not match the model configuration"
@@ -329,13 +345,23 @@ pub fn run(
                 }
             };
             let mut prefill = PrefillDisplay::new();
-            session.start_with(&result.tokens, 1, |model, tokens| {
-                model.prefill_greedy_with_progress(tokens, |event| prefill.observe(event))
+            let pause = result.pause;
+            session.start_append(result.token_budget(), 1, |model| {
+                result.prefill(|tokens, image| match image {
+                    Some(image) => {
+                        model.prefill_image_greedy_with_progress(tokens, image, |event| {
+                            prefill.observe(event)
+                        })
+                    }
+                    None => {
+                        model.prefill_greedy_with_progress(tokens, |event| prefill.observe(event))
+                    }
+                })
             })?;
             parser = codec.parser();
             stream = codec.tokenizer().decode_stream(true);
             channel = Channel::Hidden;
-            if let Some(reason) = result.pause {
+            if let Some(reason) = pause {
                 writeln!(output, "[{reason}]")?;
                 tool_pause = true;
                 break;
@@ -389,26 +415,39 @@ fn display_tool(output: &mut impl Write, event: ToolEvent<'_>) -> Result<()> {
                 terminal_text(&arguments)
             )?;
         }
+        ToolEvent::Notice(text) => writeln!(output, "{}", terminal_text(text))?,
         ToolEvent::Finished(name, result) => {
-            let value: serde_json::Value =
-                serde_json::from_str(&result.content).unwrap_or_default();
-            if name == "bash" && value.get("stdout").is_some() {
-                for key in ["stdout", "stderr"] {
-                    if let Some(text) = value[key].as_str().filter(|s| !s.is_empty()) {
-                        writeln!(output, "{}", terminal_text(text))?;
+            for part in &result.content {
+                let text = match part {
+                    rink_tools::ContentPart::Text(text) => text,
+                    rink_tools::ContentPart::Image(image) => {
+                        writeln!(
+                            output,
+                            "[Image queued: {}]",
+                            terminal_text(&image.path.to_string_lossy())
+                        )?;
+                        continue;
                     }
+                };
+                let value: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+                if name == "bash" && value.get("stdout").is_some() {
+                    for key in ["stdout", "stderr"] {
+                        if let Some(text) = value[key].as_str().filter(|s| !s.is_empty()) {
+                            writeln!(output, "{}", terminal_text(text))?;
+                        }
+                    }
+                    writeln!(
+                        output,
+                        "[bash: exit {}; signal {}; timeout {}; cancelled {}; output truncated {}]",
+                        value["exit_code"],
+                        value["signal"],
+                        value["timed_out"],
+                        value["cancelled"],
+                        value["stdout_truncated"] == true || value["stderr_truncated"] == true
+                    )?;
+                } else {
+                    writeln!(output, "{}", terminal_text(text))?;
                 }
-                writeln!(
-                    output,
-                    "[bash: exit {}; signal {}; timeout {}; cancelled {}; output truncated {}]",
-                    value["exit_code"],
-                    value["signal"],
-                    value["timed_out"],
-                    value["cancelled"],
-                    value["stdout_truncated"] == true || value["stderr_truncated"] == true
-                )?;
-            } else {
-                writeln!(output, "{}", terminal_text(&result.content))?;
             }
         }
     }

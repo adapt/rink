@@ -19,16 +19,16 @@ mod session;
 
 #[derive(clap::Args)]
 struct ToolOptions {
-    /// Enable a host tool. Bash runs directly with your user permissions.
-    #[arg(long, value_parser = ["bash"])]
-    tool: Option<String>,
+    /// Enable host tools with your user permissions; repeat or separate with commas.
+    #[arg(long, value_parser = ["bash", "read"], value_delimiter = ',')]
+    tool: Vec<String>,
     /// Starting directory for every tool call; defaults to the current directory.
     #[arg(long, requires = "tool")]
     cwd: Option<PathBuf>,
-    /// Default and maximum command duration in milliseconds.
+    /// Tool timeout in milliseconds; also the maximum allowed bash timeout.
     #[arg(long, default_value_t = 120_000, value_parser = clap::value_parser!(u64).range(1..=3_600_000), requires = "tool")]
     tool_timeout_ms: u64,
-    /// Maximum captured bytes per call, split equally between stdout and stderr.
+    /// Text bytes per read, or captured bash bytes split between stdout and stderr.
     #[arg(long, default_value_t = 16_384, value_parser = clap::value_parser!(u32).range(256..=1_048_576), requires = "tool")]
     tool_output_bytes: u32,
     /// Maximum executed tool rounds per user message, including /continue.
@@ -46,7 +46,7 @@ mod tool_option_tests {
         let Command::Chat { tools, .. } = cli.command else {
             unreachable!()
         };
-        assert!(tools.tool.is_none());
+        assert!(tools.tool.is_empty());
         assert!(tools.cwd.is_none());
         assert_eq!(tools.tool_timeout_ms, 120_000);
         assert_eq!(tools.tool_output_bytes, 16_384);
@@ -70,11 +70,23 @@ mod tool_option_tests {
         let Command::Chat { tools, .. } = cli.command else {
             unreachable!()
         };
-        assert_eq!(tools.tool.as_deref(), Some("bash"));
+        assert_eq!(tools.tool, ["bash"]);
         assert_eq!(tools.cwd, Some(PathBuf::from("/tmp")));
         assert_eq!(tools.tool_timeout_ms, 500);
         assert_eq!(tools.tool_output_bytes, 1024);
         assert_eq!(tools.max_tool_rounds, 2);
+
+        for args in [
+            vec!["--tool", "bash", "--tool", "read"],
+            vec!["--tool", "bash,read"],
+        ] {
+            let cli = Cli::try_parse_from([vec!["rink", "chat"], args].concat()).unwrap();
+            let Command::Chat { tools, .. } = cli.command else {
+                unreachable!()
+            };
+            assert_eq!(tools.tool, ["bash", "read"]);
+        }
+        assert!(Cli::try_parse_from(["rink", "chat", "--tool", "read", "--cwd", "/tmp"]).is_ok());
     }
 
     #[test]

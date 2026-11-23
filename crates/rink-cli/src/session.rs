@@ -40,18 +40,19 @@ impl<M: AutoregressiveModel> Session<M> {
 
     /// Reject oversized requests before changing any conversation state.
     pub fn check_prompt(&self, tokens: &[u32], max_tokens: usize) -> Result<()> {
+        self.check_append(tokens.len(), max_tokens)
+    }
+
+    fn check_append(&self, token_count: usize, max_tokens: usize) -> Result<()> {
         ensure!(
             matches!(self.state, State::Ready),
             "use /continue or /reset before a new message"
         );
-        ensure!(
-            !tokens.is_empty(),
-            "message must encode to at least one token"
-        );
+        ensure!(token_count > 0, "message must encode to at least one token");
         ensure!(max_tokens > 0, "reply budget must be positive");
         let total = self
             .position()
-            .checked_add(tokens.len())
+            .checked_add(token_count)
             .and_then(|n| n.checked_add(max_tokens))
             .context("token budget overflow")?;
         ensure!(
@@ -77,9 +78,26 @@ impl<M: AutoregressiveModel> Session<M> {
         max_tokens: usize,
         prefill: impl FnOnce(&mut M, &[u32]) -> Result<u32>,
     ) -> Result<()> {
-        self.check_prompt(tokens, max_tokens)?;
+        self.start_append(tokens.len(), max_tokens, |model| prefill(model, tokens))
+    }
+
+    /// Append multiple text/image parts as one round. Reserve the worst-case
+    /// token count first; generation resumes only after all parts are cached.
+    pub fn start_append(
+        &mut self,
+        token_count: usize,
+        max_tokens: usize,
+        prefill: impl FnOnce(&mut M) -> Result<u32>,
+    ) -> Result<()> {
+        self.check_append(token_count, max_tokens)?;
+        let before = self.position();
         self.state = State::Failed;
-        self.state = State::Generating(prefill(&mut self.model, tokens)?);
+        let next = prefill(&mut self.model)?;
+        ensure!(
+            self.position() > before && self.position() - before <= token_count,
+            "prefill did not respect its reserved token count"
+        );
+        self.state = State::Generating(next);
         Ok(())
     }
 

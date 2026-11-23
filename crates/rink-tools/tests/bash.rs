@@ -35,10 +35,10 @@ impl Drop for Directory {
 
 fn run(bash: &Bash, command: &str) -> Value {
     serde_json::from_str(
-        &bash
-            .execute(&json!({"command":command}), &AtomicBool::new(false))
+        bash.execute(&json!({"command":command}), &AtomicBool::new(false))
             .unwrap()
-            .content,
+            .as_text()
+            .unwrap(),
     )
     .unwrap()
 }
@@ -140,7 +140,8 @@ fn cancellation_and_invalid_arguments_do_not_leave_commands_running() {
     assert!(
         registry
             .execute("not_enabled", &json!({"command":"touch invalid"}), &flag)
-            .content
+            .as_text()
+            .unwrap()
             .contains("not enabled")
     );
     std::thread::sleep(Duration::from_millis(400));
