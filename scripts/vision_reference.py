@@ -189,7 +189,10 @@ def native(directory, output):
     for shard in sorted({v for k, v in index.items() if k.startswith("model.visual.")}):
         with safe_open(directory / shard, framework="pt") as f:
             weights.update({k: f.get_tensor(k) for k in f.keys() if k.startswith("model.visual.")})
-    for width, height, alpha in [(83, 47, False), (41, 79, True), (641, 41, True), (400, 320, False)]:
+    # 2,101 encoder positions (including CLS) and 525 merged tokens exercise
+    # matrix tiles, including their tails, in the full independent CPU encoder.
+    for width, height, alpha in [(83, 47, False), (41, 79, True), (641, 41, True),
+                                 (400, 320, False), (840, 1000, True)]:
         name = f"{width}x{height}"
         image = pattern(width, height, alpha)
         image.save(output / (name + ".png"))

@@ -1,5 +1,9 @@
 # Image input validation
 
+See [image encoding and native expert prefill](vision-tiles.md) for the latest
+performance measurements and the expanded five-image CPU reference check.
+The measurements below record earlier versions.
+
 Checked on November 22, 2026, on an Apple M4 Max with 48 GiB unified memory.
 The checkpoint is `thinkingmachines/Inkling-2-Mini` at revision
 `6e7c8248f75265bdd4fbab5273304243b5d8c2cb`.

@@ -2718,3 +2718,150 @@ fn native_mxfp8_projections_preserve_all_bits_and_route_inputs() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn native_prefill_experts_preserve_sparse_tiles_and_guards() {
+    let mut d = Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut d).unwrap();
+    let (experts, rows, top) = (17usize, 2304usize, 8usize);
+    for (format, down, name) in [
+        (0usize, false, "expert_prefill_nvfp4_up"),
+        (0, true, "expert_prefill_nvfp4_down"),
+        (1, false, "expert_prefill_mxfp8_up"),
+        (1, true, "expert_prefill_mxfp8_down"),
+    ] {
+        let cols = if down { 1152 } else { 2304 };
+        let count = experts * rows * cols;
+        let weights: Vec<u8> = (0..count / if format == 0 { 2 } else { 1 })
+            .map(|i| {
+                if format == 0 {
+                    (i.wrapping_mul(73) + 9) as u8
+                } else {
+                    [0, 1, 0x38, 0xbc, 0x10, 0xb0, 0x3c, 0x40][i % 8]
+                }
+            })
+            .collect();
+        let weights = d.upload(&weights).unwrap();
+        let scales: Vec<u8> = (0..count / if format == 0 { 16 } else { 32 })
+            .map(|i| {
+                if format == 0 {
+                    [0x30, 0x38, 0x40][i % 3]
+                } else {
+                    [125, 126, 127, 128, 129][i % 5]
+                }
+            })
+            .collect();
+        let scales = d.upload(&scales).unwrap();
+        let factors = upload(
+            &mut d,
+            &(0..experts)
+                .map(|i| 0.25 + i as f32 / 16.)
+                .collect::<Vec<_>>(),
+        );
+        let table = d
+            .allocate(if format == 0 { experts * 4096 * 4 } else { 4 })
+            .unwrap();
+        if format == 0 {
+            // SAFETY: one complete scale/code table for each expert.
+            unsafe {
+                kernels
+                    .run(
+                        &mut d,
+                        "nvfp4_decode_table",
+                        &[&table, &factors],
+                        Params::new(&[experts], &[]),
+                        experts * 4096,
+                        128,
+                    )
+                    .unwrap();
+            }
+        }
+        for batch in [1usize, 31, 64, 129, 512] {
+            for sparse in [false, true] {
+                let values: Vec<f32> = (0..batch * cols * if down { top } else { 1 })
+                    .map(|i| ((i * 23 % 173) as f32 - 86.) / 47.)
+                    .collect();
+                let input = upload(&mut d, &values);
+                let routes: Vec<f32> = (0..batch * top)
+                    .flat_map(|i| {
+                        [
+                            if sparse {
+                                (i % top) as f32
+                            } else {
+                                ((i / top * 7 + i % top * 3) % experts) as f32
+                            },
+                            1. / top as f32,
+                        ]
+                    })
+                    .collect();
+                let routing = upload(&mut d, &routes);
+                let groups = d.allocate(experts * (batch + 1) * 4).unwrap();
+                let max_tiles = (batch * top + 63 * experts.min(batch * top)) / 64;
+                let tiles = d.allocate((1 + 2 * max_tiles) * 4).unwrap();
+                let length = batch * top * rows;
+                let poison = vec![f32::from_bits(0x7fc01234); length + 64];
+                let output = upload(&mut d, &poison);
+                // SAFETY: each route selects distinct experts; lists cover all slots.
+                unsafe {
+                    kernels
+                        .run(
+                            &mut d,
+                            "expert_groups",
+                            &[&groups, &routing],
+                            Params::new(&[experts, top, batch], &[]),
+                            experts * 32,
+                            32,
+                        )
+                        .unwrap();
+                    kernels
+                        .run(
+                            &mut d,
+                            "expert_tiles",
+                            &[&tiles, &groups],
+                            Params::new(&[experts, batch, 64], &[]),
+                            32,
+                            32,
+                        )
+                        .unwrap();
+                }
+                let mut reference = Vec::new();
+                for kernel in ["expert_matmul_prefill", name] {
+                    d.write(&output, 0, bytemuck::cast_slice(&poison)).unwrap();
+                    // SAFETY: checked native shape, exact same route list, full guarded output.
+                    unsafe {
+                        kernels
+                            .run(
+                                &mut d,
+                                kernel,
+                                &[
+                                    &output, &weights, &scales, &factors, &input, &groups, &tiles,
+                                    &table,
+                                ],
+                                Params::new(
+                                    &[rows, cols, top, format, usize::from(down), batch],
+                                    &[],
+                                ),
+                                rows.div_ceil(64) * max_tiles * 256,
+                                256,
+                            )
+                            .unwrap();
+                    }
+                    let actual = d.read(&output).unwrap();
+                    assert_eq!(
+                        &actual[length * 4..],
+                        bytemuck::cast_slice::<_, u8>(&poison[length..])
+                    );
+                    if reference.is_empty() {
+                        reference = actual;
+                    } else {
+                        assert!(
+                            actual == reference,
+                            "{name}, batch {batch}, sparse {sparse}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

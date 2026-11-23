@@ -1,5 +1,8 @@
 # Metal inference benchmarks
 
+See [image encoding and native expert prefill](vision-tiles.md) for the latest
+kernel improvements, paired measurements and correctness checks.
+
 See [prefill speed and memory budgets](long-context.md) for the latest long-context
 measurements and batch settings.
 

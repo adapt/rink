@@ -445,10 +445,64 @@ mod gpu {
 
     #[test]
     #[ignore = "requires a Metal GPU"]
+    fn shared_image_attention_preserves_large_tiles_and_guards() {
+        let mut d = Metal::new().unwrap();
+        let kernels = Kernels::compile(&mut d).unwrap();
+        for n in [257usize, 1025, 2047, 2048, 2049, 4097] {
+            for heads in [1usize, 3] {
+                let length = n * heads * 64;
+                let mut upload = |phase: usize| {
+                    let values: Vec<f32> = (0..length)
+                        .map(|i| (((i * 19 + phase) % 101) as f32 - 50.) / 17.)
+                        .collect();
+                    d.upload(bytemuck::cast_slice(&values)).unwrap()
+                };
+                let q = upload(1);
+                let k = upload(13);
+                let v = upload(29);
+                let poison = vec![f32::from_bits(0x7fc01234); length + 64];
+                let out = d.upload(bytemuck::cast_slice(&poison)).unwrap();
+                let mut expected = Vec::new();
+                for (name, tile) in [
+                    ("vision_attention_64x16", 16),
+                    ("vision_attention_64x64", 64),
+                ] {
+                    d.write(&out, 0, bytemuck::cast_slice(&poison)).unwrap();
+                    // SAFETY: complete F32 heads, partial query/key tiles, guarded output.
+                    unsafe {
+                        kernels
+                            .run(
+                                &mut d,
+                                name,
+                                &[&out, &q, &k, &v],
+                                Params::new(&[n, heads, 64], &[]),
+                                n.div_ceil(tile) * heads * 256,
+                                256,
+                            )
+                            .unwrap();
+                    }
+                    let actual = d.read(&out).unwrap();
+                    assert_eq!(
+                        &actual[length * 4..],
+                        bytemuck::cast_slice::<_, u8>(&poison[length..])
+                    );
+                    assert!(floats(&actual[..length * 4]).iter().all(|v| v.is_finite()));
+                    if expected.is_empty() {
+                        expected = actual;
+                    } else {
+                        assert!(actual == expected, "sequence {n}, heads {heads}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a Metal GPU"]
     fn noncausal_attention_matches_f64_for_tail_tiles_and_all_head_widths() {
         let mut d = Metal::new().unwrap();
         let kernels = Kernels::compile(&mut d).unwrap();
-        for n in [1usize, 5, 17, 33, 65] {
+        for n in [1usize, 5, 17, 33, 64, 65, 127, 128, 129] {
             for dim in [8usize, 16, 64, 128] {
                 let heads = 2;
                 let length = n * heads * dim;
@@ -517,7 +571,12 @@ mod gpu {
                     for (name, tile) in [
                         ("vision_attention_64x16", 16),
                         ("vision_attention_64x32", 32),
+                        ("vision_attention_64x64", 64),
                     ] {
+                        // Poison each candidate independently; a skipped write must
+                        // not inherit a correct value from the reference.
+                        d.write(&out, 0, bytemuck::cast_slice(&vec![f32::NAN; length + 32]))
+                            .unwrap();
                         // SAFETY: the native specialization uses the same buffers,
                         // with eight SIMD groups and exactly 64 channels per head.
                         unsafe {

@@ -1,5 +1,8 @@
 # Parallel prefill kernels
 
+The subsequent [image encoding and native expert update](vision-tiles.md)
+includes paired measurements against this version.
+
 This change speeds up text-model prefill without increasing the batch limit or
 adding device tensor buffers. Native NVFP4/MXFP8 weights, FP32 activations and
 accumulation, FP16 KV defaults and all model passes stay the same. Image prompt

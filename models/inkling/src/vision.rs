@@ -237,8 +237,8 @@ impl<A: Accelerator> VisionEncoder<A> {
             )?;
             let (attention_kernel, attention_threads, query_tile) =
                 if h / c.num_attention_heads == 64 {
-                    if seq >= 32768 {
-                        ("vision_attention_64x32", 256, 32)
+                    if seq >= 2048 {
+                        ("vision_attention_64x64", 256, 64)
                     } else {
                         ("vision_attention_64x16", 256, 16)
                     }
@@ -375,12 +375,28 @@ impl<'a, A: Accelerator> Runner<'a, A> {
         offset: usize,
     ) -> Result<()> {
         let w = &self.weights[name];
+        // Reuse the decoder's ordered FP32 matrix tiles for large image
+        // projections. Small images retain the smaller workgroups.
+        let wide = batch >= 512 && rows >= 384;
+        let tile = if wide && rows >= 1024 {
+            64
+        } else if wide {
+            32
+        } else {
+            16
+        };
         self.dispatch(
-            "matmul_packed",
+            if tile == 64 {
+                "matmul_prefill_m64"
+            } else if wide {
+                "matmul_prefill_m32"
+            } else {
+                "matmul_packed"
+            },
             &[out, &w.buffer, x],
             &[rows, cols, w.dtype, batch, offset],
             &[],
-            rows.div_ceil(32) * batch.div_ceil(16) * 256,
+            rows.div_ceil(if wide { 64 } else { 32 }) * batch.div_ceil(tile) * 256,
             256,
         )
     }

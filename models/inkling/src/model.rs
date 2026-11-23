@@ -921,7 +921,19 @@ impl<A: Accelerator> Inkling<A> {
             // exact values in prefill without allocating another workspace.
             let threads = if groups.tile_size >= 32 { 256 } else { 128 };
             self.run(
-                if groups.tile_size == 64 {
+                if groups.tile_size == 64
+                    && rows == 2304
+                    && top == 8
+                    && cols == if down { 1152 } else { 2304 }
+                    && format < 2
+                {
+                    match (format, down) {
+                        (0, false) => "expert_prefill_nvfp4_up",
+                        (0, true) => "expert_prefill_nvfp4_down",
+                        (1, false) => "expert_prefill_mxfp8_up",
+                        _ => "expert_prefill_mxfp8_down",
+                    }
+                } else if groups.tile_size == 64 {
                     "expert_matmul_prefill"
                 } else if groups.tile_size == 32 {
                     "expert_matmul_m32k32"
