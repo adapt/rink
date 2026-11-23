@@ -1,5 +1,7 @@
 # Smaller workgroups for prefill projections
 
+The subsequent [TensorOps update](tensor-prefill.md) compares against this version.
+
 This pass starts from `a0e92fb` on the 48 GiB Apple M4 Max, with checkpoint
 revision `6e7c8248f75265bdd4fbab5273304243b5d8c2cb`. It keeps native quantized
 weights, FP32 activations and accumulation, the model schedule, KV precision,

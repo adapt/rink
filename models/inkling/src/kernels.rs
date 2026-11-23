@@ -21,6 +21,14 @@ pub const SOURCE: KernelSource<'static> = KernelSource {
     subgroup_size: Some(32),
 };
 
+/// Optional newer Metal primitives; failure to compile retains the base kernels.
+pub const TENSOR_SOURCE: KernelSource<'static> = KernelSource {
+    name: "inkling-2-mini-tensor-v1",
+    metal: Some(include_str!("prefill_tensor.metal")),
+    cuda: None,
+    subgroup_size: Some(32),
+};
+
 #[repr(C)]
 #[derive(Clone, Copy, Default, Pod, Zeroable)]
 pub struct Params {
@@ -128,8 +136,16 @@ impl<A: Accelerator> Kernels<A> {
         ] {
             entries.insert(name, device.compile(&SOURCE, name)?);
         }
+        if let Ok(kernel) = device.compile(&TENSOR_SOURCE, "matmul_prefill_tensor") {
+            entries.insert("matmul_prefill_tensor", kernel);
+        }
         Ok(Self { entries })
     }
+
+    pub fn has_tensor_prefill(&self) -> bool {
+        self.entries.contains_key("matmul_prefill_tensor")
+    }
+
     /// # Safety
     /// Buffers, dimensions and dispatch geometry must match the documented shader ABI.
     pub unsafe fn run(

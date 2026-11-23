@@ -40,6 +40,10 @@ unsafe impl Accelerator for Poison {
         unsafe { self.0.initialize_f32(b, count, fill) }
     }
     fn compile(&mut self, source: &KernelSource<'_>, entry: &str) -> Result<MetalKernel> {
+        // Exercise loading and inference when the optional newer library is unavailable.
+        if source.name == rink_inkling::kernels::TENSOR_SOURCE.name {
+            anyhow::bail!("optional tensor library unavailable in this test");
+        }
         self.0.compile(source, entry)
     }
     unsafe fn dispatch(
@@ -64,6 +68,14 @@ unsafe impl Accelerator for Poison {
     fn read_into(&mut self, b: &MetalBuffer, output: &mut [u8]) -> Result<()> {
         self.0.read_into(b, output)
     }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn unsupported_tensor_library_keeps_base_kernels() {
+    let mut device = Poison(Metal::new().unwrap());
+    let kernels = rink_inkling::kernels::Kernels::compile(&mut device).unwrap();
+    assert!(!kernels.has_tensor_prefill());
 }
 
 fn same(a: Vec<f32>, b: Vec<f32>) {

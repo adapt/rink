@@ -1,0 +1,60 @@
+{
+  "baseline_revision": "a5b4787",
+  "device": "Apple M4 Max",
+  "image_height": 3044,
+  "image_tokens": 10318,
+  "image_width": 5344,
+  "method": "One loaded encoder, all three kernel choices; reverse order each round; fresh bounded encoder workspace per trial, including allocation; no text decoder or KV cache; exact feature comparison. No image pixels or generated content recorded.",
+  "rounds": 2,
+  "trials": [
+    {
+      "features_bit_identical": true,
+      "gpu_seconds": 34.885519916773774,
+      "mode": "base",
+      "peak_allocated_bytes": 2526691328,
+      "round": 0,
+      "seconds": 34.991306292
+    },
+    {
+      "features_bit_identical": true,
+      "gpu_seconds": 36.25849275034852,
+      "mode": "tensor",
+      "peak_allocated_bytes": 2526691328,
+      "round": 0,
+      "seconds": 36.368330833
+    },
+    {
+      "features_bit_identical": true,
+      "gpu_seconds": 35.09290879149921,
+      "mode": "fused",
+      "peak_allocated_bytes": 2526691328,
+      "round": 0,
+      "seconds": 35.196429791
+    },
+    {
+      "features_bit_identical": true,
+      "gpu_seconds": 35.511715208296664,
+      "mode": "fused",
+      "peak_allocated_bytes": 2526691328,
+      "round": 1,
+      "seconds": 35.61991175
+    },
+    {
+      "features_bit_identical": true,
+      "gpu_seconds": 38.03076895850245,
+      "mode": "tensor",
+      "peak_allocated_bytes": 2526691328,
+      "round": 1,
+      "seconds": 38.139201291
+    },
+    {
+      "features_bit_identical": true,
+      "gpu_seconds": 39.865778791252524,
+      "mode": "base",
+      "peak_allocated_bytes": 2526691328,
+      "round": 1,
+      "seconds": 39.974585625
+    }
+  ],
+  "selection": "Rejected for production: large timing drift and the full-model image pair do not establish a reliable improvement over the existing encoder."
+}

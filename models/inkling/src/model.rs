@@ -389,9 +389,13 @@ impl<A: Accelerator> Inkling<A> {
                 && (rows >= 2048 || self.batch >= 4096)
                 && cols % 32 == 0
                 && w.dtype == 1;
-            let threads = if compact { 128 } else { 256 };
+            let tensor =
+                tile == 64 && cols % 32 == 0 && w.dtype == 1 && self.kernels.has_tensor_prefill();
+            let threads = if compact || tensor { 128 } else { 256 };
             self.run(
-                if compact {
+                if tensor {
+                    "matmul_prefill_tensor"
+                } else if compact {
                     "matmul_prefill_compact"
                 } else if wide {
                     if tile == 32 {

@@ -1,6 +1,6 @@
 # Metal inference benchmarks
 
-See [smaller prefill workgroups](prefill-compact.md) for the latest kernel
+See [TensorOps prefill projections](tensor-prefill.md) for the latest kernel
 improvements, paired measurements and correctness checks.
 
 See [prefill speed and memory budgets](long-context.md) for the latest long-context

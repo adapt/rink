@@ -1,0 +1,1164 @@
+{
+  "baseline_revision": "a5b4787",
+  "device": "Apple M4 Max",
+  "method": "Retained dense kernel and rejected GELU candidate; four alternating timing rounds after an excluded warmup, four dispatches per sample. Dense reference selects the old wide or compact kernel; GELU reference is TensorOps followed by the original bias/GELU kernel. Every output and guard byte matches. No device buffers are allocated during dispatch. Synthetic repeated data does not establish full-model throughput.",
+  "dense": [
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00036042186548002064,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.0003368437464814633,
+        0.00036096872645430267,
+        0.0003598750045057386,
+        0.0003610937565099448
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00026860416983254254,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.0002525624877307564,
+        0.00026862500817514956,
+        0.0002700728946365416,
+        0.0002685833314899355
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.000863083332660608,
+      "rows": 3072,
+      "tensor": false,
+      "trials": [
+        0.000856010417919606,
+        0.0008770624990575016,
+        0.00087015624740161,
+        0.0007626979204360396
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0006489062361652032,
+      "rows": 3072,
+      "tensor": true,
+      "trials": [
+        0.0006326249858830124,
+        0.0006659374921582639,
+        0.0006651874864473939,
+        0.0005873854388482869
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0007725885516265407,
+      "rows": 2304,
+      "tensor": false,
+      "trials": [
+        0.0007727395859546959,
+        0.0007724375172983855,
+        0.0007707499898970127,
+        0.0007737500127404928
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0005844843690283597,
+      "rows": 2304,
+      "tensor": true,
+      "trials": [
+        0.0005849374865647405,
+        0.000585302070248872,
+        0.0005821562372148037,
+        0.0005840312514919788
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00014187500346451998,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.00014184374595060945,
+        0.0001419062609784305,
+        0.0001417500025127083,
+        0.00014224997721612453
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00010676562669686973,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.00010709374328143895,
+        0.00010686457972042263,
+        0.00010666667367331684,
+        0.00010653125355020165
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00039863542770035565,
+      "rows": 4096,
+      "tensor": false,
+      "trials": [
+        0.0003986875235568732,
+        0.0003986771043855697,
+        0.0003980937472078949,
+        0.0003985937510151416
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0003146458329865709,
+      "rows": 4096,
+      "tensor": true,
+      "trials": [
+        0.00031456249416805804,
+        0.0003150312404613942,
+        0.0003146041708532721,
+        0.0003146874951198697
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0005583385500358418,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.000558156258193776,
+        0.0005590624932665378,
+        0.0005578125128522515,
+        0.0005585208418779075
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0004095989716006443,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.00040962500497698784,
+        0.00040957293822430074,
+        0.0004088854184374213,
+        0.00041193750803358853
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.0015644166705897078,
+      "rows": 4096,
+      "tensor": false,
+      "trials": [
+        0.0015647708205506206,
+        0.0015632395807188004,
+        0.001564062520628795,
+        0.001566145831020549
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.0012451666843844578,
+      "rows": 4096,
+      "tensor": true,
+      "trials": [
+        0.0012454896059352905,
+        0.0012586562370415777,
+        0.0012446562468539923,
+        0.001244843762833625
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0010049010452348739,
+      "rows": 2304,
+      "tensor": false,
+      "trials": [
+        0.0010037291795015335,
+        0.0010055937455035746,
+        0.0010048958356492221,
+        0.0010049062548205256
+      ]
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0007794479170115665,
+      "rows": 2304,
+      "tensor": true,
+      "trials": [
+        0.0007783125038258731,
+        0.0007802083273418248,
+        0.0007791666721459478,
+        0.0007797291618771851
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.000713604167685844,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.0008968749898485839,
+        0.0008152708469424397,
+        0.0006119374884292483,
+        0.0005283749778755009
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0005834479088662192,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.0006653854215983301,
+        0.0005837812495883554,
+        0.000583114568144083,
+        0.00039071874925866723
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0013508749980246648,
+      "rows": 3072,
+      "tensor": false,
+      "trials": [
+        0.0013515312457457185,
+        0.0013502708170562983,
+        0.0013506562390830368,
+        0.0013510937569662929
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0010573072941042483,
+      "rows": 3072,
+      "tensor": true,
+      "trials": [
+        0.001057645829860121,
+        0.0010569687583483756,
+        0.0010569687583483756,
+        0.0010581875103525817
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.001366218741168268,
+      "rows": 2304,
+      "tensor": false,
+      "trials": [
+        0.0013649375177919865,
+        0.0013656562368851155,
+        0.001382677088258788,
+        0.0013667812454514205
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0010690416529541835,
+      "rows": 2304,
+      "tensor": true,
+      "trials": [
+        0.001069583318894729,
+        0.0010691145726013929,
+        0.0010688750189729035,
+        0.0010689687333069742
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0002375833282712847,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.00023719790624454618,
+        0.00023796875029802322,
+        0.00023701039026491344,
+        0.0002383958490099758
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00017669789667706937,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.00017609374481253326,
+        0.0001764062326401472,
+        0.00017728126840665936,
+        0.00017698956071399152
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0007626250007888302,
+      "rows": 4096,
+      "tensor": false,
+      "trials": [
+        0.0007624166610185057,
+        0.0007623854326084256,
+        0.0007628333405591547,
+        0.0007632604392711073
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0006108124944148585,
+      "rows": 4096,
+      "tensor": true,
+      "trials": [
+        0.000611687486525625,
+        0.0006107812514528632,
+        0.0006099895981606096,
+        0.0006108437373768538
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0009345364669570699,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.0009337812662124634,
+        0.0009363020653836429,
+        0.0009352916677016765,
+        0.0009335312352050096
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0006868229247629642,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.0006879166758153588,
+        0.0006852500082459301,
+        0.0007089166610967368,
+        0.0006857291737105697
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.003026890626642853,
+      "rows": 4096,
+      "tensor": false,
+      "trials": [
+        0.0030273124866653234,
+        0.0030278958147391677,
+        0.0030264687666203827,
+        0.0030258437618613243
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.0024311875022249296,
+      "rows": 4096,
+      "tensor": true,
+      "trials": [
+        0.002431239583529532,
+        0.0024837187374942005,
+        0.0024311354209203273,
+        0.0024308749998454005
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0017806354153435677,
+      "rows": 2304,
+      "tensor": false,
+      "trials": [
+        0.0017807187396101654,
+        0.0017808541597332805,
+        0.0017803437367547303,
+        0.00178055209107697
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0014237291761673987,
+      "rows": 2304,
+      "tensor": true,
+      "trials": [
+        0.0014234166592359543,
+        0.001424041693098843,
+        0.001425093738362193,
+        0.0014223750040400773
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.016681994806276634,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.016682020854204893,
+        0.01668300002347678,
+        0.016681968758348376,
+        0.016681031236657873
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.013348255190066993,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.013348895852686837,
+        0.013348031236091629,
+        0.013348229142138734,
+        0.013348281237995252
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.049741520822863095,
+      "rows": 3072,
+      "tensor": false,
+      "trials": [
+        0.0497637499938719,
+        0.04976240624091588,
+        0.04972063540481031,
+        0.04971567707252689
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.039853828129707836,
+      "rows": 3072,
+      "tensor": true,
+      "trials": [
+        0.03984509376459755,
+        0.039862125006038696,
+        0.039845531253376976,
+        0.03987464582314715
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.04955073437304236,
+      "rows": 2304,
+      "tensor": false,
+      "trials": [
+        0.04956778124324046,
+        0.0495683437329717,
+        0.04953303124057129,
+        0.04953368750284426
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.039877218747278675,
+      "rows": 2304,
+      "tensor": true,
+      "trials": [
+        0.03992715626372956,
+        0.03988421874237247,
+        0.03987021875218488,
+        0.039848406246164814
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.007277041659108363,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.0072764270880725235,
+        0.007275072915945202,
+        0.007278374978341162,
+        0.007277656230144203
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.005938364585745148,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.005937322915997356,
+        0.005938791669905186,
+        0.005937937501585111,
+        0.0059390000242274255
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.028905135419336148,
+      "rows": 4096,
+      "tensor": false,
+      "trials": [
+        0.028886749991215765,
+        0.028920229175128043,
+        0.0289068958372809,
+        0.028903375001391396
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.023595421866048127,
+      "rows": 4096,
+      "tensor": true,
+      "trials": [
+        0.02359531249385327,
+        0.023595531238242984,
+        0.023596427083248273,
+        0.02357505206600763
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.028754359373124316,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.028732999984640628,
+        0.02873141664895229,
+        0.028775718761608005,
+        0.02877723958226852
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.023743088531773537,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.02373343749786727,
+        0.0237513437459711,
+        0.023766010417602956,
+        0.023734833317575976
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.12296976562356576,
+      "rows": 4096,
+      "tensor": false,
+      "trials": [
+        0.11511062498902902,
+        0.11519741668598726,
+        0.13074211456114426,
+        0.1329808437731117
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.09573222394101322,
+      "rows": 4096,
+      "tensor": true,
+      "trials": [
+        0.09450285416096449,
+        0.09567626038915478,
+        0.09580774998175912,
+        0.09578818749287166
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.06662254687398672,
+      "rows": 2304,
+      "tensor": false,
+      "trials": [
+        0.06556743750115857,
+        0.06699474999913946,
+        0.06625034374883398,
+        0.06733553126105107
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.054759156235377304,
+      "rows": 2304,
+      "tensor": true,
+      "trials": [
+        0.05314673957764171,
+        0.05517173957196064,
+        0.054346572898793966,
+        0.05526787499547936
+      ]
+    }
+  ],
+  "gelu": [
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "fused": false,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0023167395702330396,
+      "rows": 4096,
+      "trials": [
+        0.0024468124902341515,
+        0.002446541649987921,
+        0.002186937490478158,
+        0.002167281258152798
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "fused": true,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.002089302084641531,
+      "rows": 4096,
+      "trials": [
+        0.002474375010933727,
+        0.0021567187504842877,
+        0.0020218854187987745,
+        0.0019435000140219927
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "fused": false,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.0036045208398718387,
+      "rows": 4096,
+      "trials": [
+        0.0040025520720519125,
+        0.003747312497580424,
+        0.0034617291821632534,
+        0.003460354171693325
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "fused": true,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.003220651051378809,
+      "rows": 4096,
+      "trials": [
+        0.0038462187512777746,
+        0.0032564062566962093,
+        0.0031848958460614085,
+        0.0031839687726460397
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "fused": false,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.06471204686386045,
+      "rows": 4096,
+      "trials": [
+        0.06470956248813309,
+        0.06470842708949931,
+        0.06472408332047053,
+        0.06471453123958781
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "fused": true,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.05577997396176215,
+      "rows": 4096,
+      "trials": [
+        0.055747104168403894,
+        0.05573194791213609,
+        0.05581284375512041,
+        0.055819187487941235
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "fused": false,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.13822636457916815,
+      "rows": 4096,
+      "trials": [
+        0.13612993751303293,
+        0.1364539687638171,
+        0.1399987603945192,
+        0.14008237500092946
+      ]
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "fused": true,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.12904609374527354,
+      "rows": 4096,
+      "trials": [
+        0.12464965623803437,
+        0.1285480624937918,
+        0.12954412499675527,
+        0.13120127085130662
+      ]
+    }
+  ],
+  "gelu_selected": false,
+  "final_dense_confirmation": [
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0008397656201850623,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.0008929270843509585,
+        0.0009242187661584467,
+        0.0007866041560191661,
+        0.000572989578358829
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0005880104145035148,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.0017317187739536166,
+        0.0005925624864175916,
+        0.000583458342589438,
+        0.0003900937444996089
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0013509479176718742,
+      "rows": 3072,
+      "tensor": false,
+      "trials": [
+        0.00135114582371898,
+        0.0013507500116247684,
+        0.0013503437512554228,
+        0.0013519479252863675
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0010574583284324035,
+      "rows": 3072,
+      "tensor": true,
+      "trials": [
+        0.0010578541841823608,
+        0.0010574270854704082,
+        0.0010566979181021452,
+        0.0010574895713943988
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0013657343806698918,
+      "rows": 2304,
+      "tensor": false,
+      "trials": [
+        0.0013649687462020665,
+        0.0013659062678925693,
+        0.0013659166870638728,
+        0.0013655624934472144
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0010688697802834213,
+      "rows": 2304,
+      "tensor": true,
+      "trials": [
+        0.0010685520828701556,
+        0.00106964583392255,
+        0.0010687499889172614,
+        0.0010689895716495812
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0002376718766754493,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.00023709374363534153,
+        0.0002377500059083104,
+        0.0002375937474425882,
+        0.00023806249373592436
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00017629687499720603,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.00017659374861977994,
+        0.00017600000137463212,
+        0.00017693749396130443,
+        0.0001759687438607216
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0007635468791704625,
+      "rows": 4096,
+      "tensor": false,
+      "trials": [
+        0.0007634375069756061,
+        0.0007643437420483679,
+        0.0007636562513653189,
+        0.0007627604354638606
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0006105677020968869,
+      "rows": 4096,
+      "tensor": true,
+      "trials": [
+        0.0006114375137258321,
+        0.0006105208303779364,
+        0.0006106145738158375,
+        0.0006104687636252493
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0009338333329651505,
+      "rows": 1024,
+      "tensor": false,
+      "trials": [
+        0.0009336770744994283,
+        0.0009361562260892242,
+        0.0009324999991804361,
+        0.0009339895914308727
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0006860937282908708,
+      "rows": 1024,
+      "tensor": true,
+      "trials": [
+        0.0006849687488283962,
+        0.0006874270911794156,
+        0.0006858437263872474,
+        0.0006863437301944941
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.003029057290405035,
+      "rows": 4096,
+      "tensor": false,
+      "trials": [
+        0.003029593761311844,
+        0.003028229170013219,
+        0.003028520819498226,
+        0.0030341874808073044
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.002430505206575617,
+      "rows": 4096,
+      "tensor": true,
+      "trials": [
+        0.0024305937404278666,
+        0.002432749985018745,
+        0.002429750020382926,
+        0.002430416672723368
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0017796823085518554,
+      "rows": 2304,
+      "tensor": false,
+      "trials": [
+        0.0017788020777516067,
+        0.0017799583438318223,
+        0.0017794062732718885,
+        0.001780406222678721
+      ]
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0014251874963520095,
+      "rows": 2304,
+      "tensor": true,
+      "trials": [
+        0.001426083326805383,
+        0.001422541681677103,
+        0.0014252812543418258,
+        0.001425093738362193
+      ]
+    }
+  ]
+}

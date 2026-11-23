@@ -2547,8 +2547,14 @@ fn projection_scheduling_preserves_every_output_bit() {
                             ("matmul_prefill_m32", 32, 64, 256),
                             ("matmul_prefill_m64", 64, 64, 256),
                             ("matmul_prefill_compact", 64, 64, 128),
+                            ("matmul_prefill_tensor", 64, 64, 128),
                         ] {
                             if name == "matmul_prefill_compact" && cols % 32 != 0 {
+                                continue;
+                            }
+                            if name == "matmul_prefill_tensor"
+                                && (dtype != 1 || cols % 32 != 0 || !k.has_tensor_prefill())
+                            {
                                 continue;
                             }
                             let packed = upload(&mut d, &initial);

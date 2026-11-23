@@ -54,6 +54,10 @@ mod comparison {
             unsafe { self.inner.initialize_f32(b, count, fill) }
         }
         fn compile(&mut self, source: &KernelSource<'_>, entry: &str) -> Result<Choice> {
+            // Preserve this historical comparison's pre-TensorOps dispatch rules.
+            if entry == "matmul_prefill_tensor" {
+                anyhow::bail!("TensorOps is excluded from the a0e92fb comparison");
+            }
             let current = self.inner.compile(source, entry)?;
             let (previous, kind) = if entry.starts_with("expert_prefill_") {
                 let library = KernelSource {
