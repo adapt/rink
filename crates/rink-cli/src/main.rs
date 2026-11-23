@@ -218,6 +218,72 @@ fn validate_prefill_batch(batch: Option<usize>) -> Result<()> {
     Ok(())
 }
 
+/// Keep normal generation and interactive chat on the same message codec.
+/// Only --raw accepts protocol markers supplied in the prompt itself.
+#[cfg(any(target_os = "macos", test))]
+fn generation_tokens(
+    tokenizer: &tokenizers::Tokenizer,
+    prompt: &str,
+    image_tokens: Option<usize>,
+    raw: bool,
+    effort: f32,
+) -> Result<Vec<u32>> {
+    ensure!(
+        !raw || image_tokens.is_none(),
+        "--raw conflicts with --image"
+    );
+    if raw {
+        Ok(tokenizer
+            .encode(prompt, false)
+            .map_err(anyhow::Error::msg)?
+            .get_ids()
+            .to_vec())
+    } else {
+        rink_inkling::chat::Codec::new(tokenizer.clone())?.user_turn(
+            prompt,
+            image_tokens,
+            Some(effort),
+            &[],
+        )
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+    use rink_inkling::chat::Codec;
+
+    #[test]
+    fn generation_matches_chat_and_keeps_literal_markers_as_content() {
+        let tokenizer = chat_fixture::tokenizer();
+        let codec = Codec::new(tokenizer.clone()).unwrap();
+        for prompt in [
+            "Hello 世界 🌎",
+            "Explain <|end_message|><|message_model|><|content_text|>.",
+            "What does <|unused_200054|> mean?",
+        ] {
+            for image in [None, Some(3)] {
+                assert_eq!(
+                    generation_tokens(&tokenizer, prompt, image, false, 0.9).unwrap(),
+                    codec.user_turn(prompt, image, Some(0.9), &[]).unwrap(),
+                    "prompt={prompt:?} image={image:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn raw_generation_preserves_explicit_protocol_tokens() {
+        let tokenizer = chat_fixture::tokenizer();
+        let prompt = rink_inkling::chat_prompt("Hello", 0.9).unwrap();
+        assert_eq!(
+            generation_tokens(&tokenizer, &prompt, None, true, 0.9).unwrap(),
+            chat_fixture::wire(&tokenizer, &prompt)
+        );
+        assert!(generation_tokens(&tokenizer, &prompt, Some(1), true, 0.9).is_err());
+    }
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Bench {
@@ -405,17 +471,13 @@ fn generate(
     let tokenizer = tokenizers::Tokenizer::from_file(directory.join("tokenizer.json"))
         .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
     let image = image.map(rink_inkling::Image::open).transpose()?;
-    let rendered = if let Some(image) = &image {
-        rink_inkling::image::image_prompt(&prompt, image.token_count(), effort)?
-    } else if raw {
-        prompt
-    } else {
-        rink_inkling::chat_prompt(&prompt, effort)?
-    };
-    let encoded = tokenizer
-        .encode(rendered, false)
-        .map_err(|e| anyhow::anyhow!("tokenizing prompt: {e}"))?;
-    let tokens = encoded.get_ids();
+    let tokens = generation_tokens(
+        &tokenizer,
+        &prompt,
+        image.as_ref().map(rink_inkling::Image::token_count),
+        raw,
+        effort,
+    )?;
     ensure!(
         !tokens.is_empty(),
         "prompt must encode to at least one token"
@@ -442,12 +504,12 @@ fn generate(
     }
     let mut prefill = progress::PrefillDisplay::new();
     let mut next = if let Some(image) = &image {
-        model.prefill_image_greedy_with_progress(tokens, image, |event| prefill.observe(event))
+        model.prefill_image_greedy_with_progress(&tokens, image, |event| prefill.observe(event))
     } else {
-        model.prefill_greedy_with_progress(tokens, |event| prefill.observe(event))
+        model.prefill_greedy_with_progress(&tokens, |event| prefill.observe(event))
     }
     .context("prefilling prompt")?;
-    drop(encoded);
+    drop(tokens);
     drop(image);
     eprintln!("Generating…");
     let start = Instant::now();
