@@ -1,4 +1,5 @@
 //! Inkling 2 Mini's native checkpoint, image encoder, looped decoder, and accelerator kernels.
+pub mod chat;
 pub mod checkpoint;
 pub mod config;
 pub mod image;

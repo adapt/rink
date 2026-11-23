@@ -71,6 +71,27 @@ Use `cargo run --release -- chat --help` to see all options.
 The model configuration allows up to 1,048,576 tokens. This context does not fit
 in 48 GB of unified memory.
 
+## Bash tool
+
+Enable Bash so the model can run commands:
+
+```sh
+cargo run --release -- chat --tool bash --cwd /path/to/project
+```
+
+Commands run directly with your user permissions. There is no approval prompt or
+sandbox. Each call starts a new shell in `--cwd` (the current directory by default).
+Shell variables and directory changes do not carry over to the next call.
+Commands cannot read terminal input. Background processes in the command's process
+group stop when the call ends. Chat shows each command and its output.
+
+The defaults are a 120-second timeout, 16 KiB of captured output per call (split
+between stdout and stderr), and eight tool rounds per user message. Set these with
+`--tool-timeout-ms`, `--tool-output-bytes`, and `--max-tool-rounds`.
+Press Ctrl-C during a command to cancel it. Use `/continue` to let the model read
+the result. `/continue` also resumes a reply that reached its token limit.
+Tool results use context space. The reply limit includes thinking and tool calls.
+
 ## AI disclosure
 
 The vast majority of this code was written by GPT 6 Astra with human guidance.

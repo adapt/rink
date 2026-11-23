@@ -1,9 +1,12 @@
 use crate::{
+    ToolOptions,
+    agent::{ToolEvent, ToolLoop},
     progress::{PrefillDisplay, StatusLine, rate},
     session::Session,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rink_core::Accelerator;
+use rink_inkling::chat::{Channel as NativeChannel, Codec, Event};
 use std::{
     io::{BufRead, Write},
     path::PathBuf,
@@ -15,6 +18,7 @@ enum Channel {
     Hidden,
     Thinking,
     Text,
+    Tool,
 }
 
 impl Channel {
@@ -27,6 +31,7 @@ impl Channel {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     directory: PathBuf,
     max_tokens: usize,
@@ -35,19 +40,27 @@ pub fn run(
     show_thinking: bool,
     kv_cache: rink_inkling::KvCachePrecision,
     prefill_batch: Option<usize>,
+    tools: ToolOptions,
 ) -> Result<()> {
     let tokenizer = tokenizers::Tokenizer::from_file(directory.join("tokenizer.json"))
         .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
-    let special = |name: &str| {
-        tokenizer
-            .token_to_id(name)
-            .with_context(|| format!("tokenizer is missing {name}"))
-    };
-    let thinking_token = special("<|content_thinking|>")?;
-    let text_token = special("<|content_text|>")?;
-    let model_token = special("<|message_model|>")?;
-    let end_token = special("<|end_message|>")?;
-    let eos_token = special("<|content_model_end_sampling|>")?;
+    let codec = Codec::new(tokenizer)?;
+    let eos_token = codec.eos();
+    let mut registry = rink_tools::Registry::default();
+    if tools.tool.is_some() {
+        let bash = rink_tools::Bash::new(
+            tools.cwd.unwrap_or(std::env::current_dir()?),
+            std::time::Duration::from_millis(tools.tool_timeout_ms),
+            tools.tool_output_bytes as usize,
+        )?;
+        eprintln!(
+            "Bash enabled with direct host access in {}. Ctrl-C cancels a running command.",
+            bash.cwd().display()
+        );
+        registry.register(bash)?;
+    }
+    let definitions = registry.definitions();
+    let mut tool_loop = ToolLoop::new(registry, tools.max_tool_rounds as usize);
     let config = rink_inkling::Config::load(directory.join("config.json"))?;
     anyhow::ensure!(
         config.eos_token_id == eos_token,
@@ -74,7 +87,9 @@ pub fn run(
         "Context: {context} tokens; reply limit: {max_tokens}; effort: {effort}; KV cache: {kv_cache}; prefill batch: {prefill_batch}."
     )?;
     let mut line = String::new();
-    let mut stream = tokenizer.decode_stream(true);
+    let mut stream = codec.tokenizer().decode_stream(true);
+    let mut parser = codec.parser();
+    let mut needs_reset = false;
     let mut channel = Channel::Hidden;
     let mut pending_image: Option<rink_inkling::Image> = None;
     loop {
@@ -98,13 +113,20 @@ pub fn run(
             }
             "/reset" => {
                 session.reset()?;
+                parser = codec.parser();
+                tool_loop.reset();
+                needs_reset = false;
                 pending_image = None;
                 channel = Channel::Hidden;
-                stream = tokenizer.decode_stream(true);
+                stream = codec.tokenizer().decode_stream(true);
                 writeln!(output, "Conversation cleared. The model is still loaded.")?;
                 continue;
             }
             "/continue" => {
+                if needs_reset {
+                    writeln!(output, "Use /reset after a conversation error.")?;
+                    continue;
+                }
                 if let Err(error) = session.reply_budget(max_tokens) {
                     writeln!(output, "{error}")?;
                     continue;
@@ -123,17 +145,14 @@ pub fn run(
                 continue;
             }
             command if command.starts_with("/image ") => {
-                if session.pending() {
+                if session.pending() || needs_reset {
                     writeln!(
                         output,
                         "The last reply is unfinished. Use /continue or /reset."
                     )?;
                     continue;
                 }
-                if config.vision_config.is_none()
-                    || tokenizer.token_to_id(rink_inkling::image::IMAGE_TOKEN)
-                        != Some(config.image_token_id)
-                {
+                if config.vision_config.is_none() || codec.image_token() != config.image_token_id {
                     writeln!(
                         output,
                         "This checkpoint or tokenizer does not support image input."
@@ -166,103 +185,163 @@ pub fn run(
                 continue;
             }
             _ => {
-                if session.pending() {
+                if session.pending() || needs_reset {
                     writeln!(
                         output,
                         "The last reply is unfinished. Use /continue or /reset."
                     )?;
                     continue;
                 }
-                let rendered = if let Some(image) = &pending_image {
-                    if session.position() == 0 {
-                        rink_inkling::image::image_prompt(message, image.token_count(), effort)?
-                    } else {
-                        rink_inkling::image::image_user_message(message, image.token_count())
-                    }
-                } else if session.position() == 0 {
-                    rink_inkling::chat_prompt(message, effort)?
-                } else {
-                    rink_inkling::chat_user_message(message)
-                };
-                let encoded = tokenizer
-                    .encode(rendered, false)
-                    .map_err(|e| anyhow::anyhow!("tokenizing message: {e}"))?;
-                if let Err(error) = session.check_prompt(encoded.get_ids(), max_tokens) {
+                let encoded = codec.user_turn(
+                    message,
+                    pending_image.as_ref().map(rink_inkling::Image::token_count),
+                    (session.position() == 0).then_some(effort),
+                    &definitions,
+                )?;
+                if let Err(error) = session.check_prompt(&encoded, max_tokens) {
                     writeln!(output, "{error}")?;
                     continue;
                 }
                 let mut prefill = PrefillDisplay::new();
                 if let Some(image) = &pending_image {
-                    session.start_with(encoded.get_ids(), max_tokens, |model, tokens| {
+                    session.start_with(&encoded, max_tokens, |model, tokens| {
                         model.prefill_image_greedy_with_progress(tokens, image, |event| {
                             prefill.observe(event);
                         })
                     })?;
                 } else {
-                    session.start_with(encoded.get_ids(), max_tokens, |model, tokens| {
+                    session.start_with(&encoded, max_tokens, |model, tokens| {
                         model.prefill_greedy_with_progress(tokens, |event| prefill.observe(event))
                     })?;
                 }
                 pending_image = None;
-                stream = tokenizer.decode_stream(true);
+                parser = codec.parser();
+                tool_loop.reset();
+                stream = codec.tokenizer().decode_stream(true);
                 channel = Channel::Hidden;
             }
         }
 
-        // Keep both the decoder and the channel across /continue, including a
-        // partially decoded UTF-8 character at the token limit.
-        let mut label = channel.label(show_thinking);
-        let start = Instant::now();
-        let before = session.position();
-        let mut status = StatusLine::new();
-        status.update("Generating…", true);
-        for _ in 0..session.reply_budget(max_tokens)? {
-            let Some(token) = session.next_token()? else {
+        // Keep the UTF-8 decoder and native parser across /continue. Tool calls
+        // remain buffered until EOS, including when a pause splits their JSON.
+        let mut remaining = max_tokens;
+        let mut tool_pause = false;
+        loop {
+            if remaining == 0 {
                 break;
-            };
-            let boundary = if token == thinking_token {
-                Some(Channel::Thinking)
-            } else if token == text_token {
-                Some(Channel::Text)
-            } else if token == model_token || token == end_token {
-                Some(Channel::Hidden)
-            } else {
-                None
-            };
-            if let Some(next_channel) = boundary {
-                channel = next_channel;
-                label = channel.label(show_thinking);
-                stream = tokenizer.decode_stream(true);
-                if matches!(channel, Channel::Thinking) && !show_thinking {
-                    status.update("Thinking…", true);
-                }
-            } else if channel.label(show_thinking).is_some() {
-                if let Some(text) = stream
-                    .step(token)
-                    .map_err(|e| anyhow::anyhow!("decoding token: {e}"))?
-                {
-                    status.clear();
-                    if let Some(label) = label.take() {
-                        write!(output, "\n{label}: ")?;
+            }
+            let mut label = channel.label(show_thinking);
+            let start = Instant::now();
+            let before = session.position();
+            let mut status = StatusLine::new();
+            let mut complete = false;
+            status.update("Generating…", true);
+            for _ in 0..session.reply_budget(remaining)? {
+                let Some(token) = session.next_token()? else {
+                    complete = true;
+                    break;
+                };
+                let event = match parser.push(token, codec.tokenizer()) {
+                    Ok(event) => event,
+                    Err(error) => {
+                        status.clear();
+                        writeln!(output, "\nInvalid model response: {error:#}. Use /reset.")?;
+                        needs_reset = true;
+                        break;
                     }
-                    write!(output, "{text}")?;
-                    output.flush()?;
+                };
+                match event {
+                    Event::Boundary(next) => {
+                        channel = match next {
+                            Some(NativeChannel::Thinking) => Channel::Thinking,
+                            Some(NativeChannel::Text) => Channel::Text,
+                            Some(NativeChannel::Tool) => Channel::Tool,
+                            None => Channel::Hidden,
+                        };
+                        label = channel.label(show_thinking);
+                        stream = codec.tokenizer().decode_stream(true);
+                        if matches!(channel, Channel::Tool) {
+                            status.update("Preparing tool call…", true);
+                        }
+                    }
+                    Event::Token(_, token) if channel.label(show_thinking).is_some() => {
+                        if let Some(text) = stream.step(token).map_err(anyhow::Error::msg)? {
+                            status.clear();
+                            if let Some(label) = label.take() {
+                                write!(output, "\n{label}: ")?;
+                            }
+                            write!(output, "{text}")?;
+                            output.flush()?;
+                        }
+                    }
+                    _ => {}
+                }
+                if matches!(channel, Channel::Thinking) && !show_thinking {
+                    status.update(
+                        &format!(
+                            "Thinking… {} tokens generated; {:.1}s",
+                            session.position() - before,
+                            start.elapsed().as_secs_f64()
+                        ),
+                        false,
+                    );
                 }
             }
-            if matches!(channel, Channel::Thinking) && !show_thinking {
-                status.update(
-                    &format!(
-                        "Thinking… {} tokens generated; {:.1}s",
-                        session.position() - before,
-                        start.elapsed().as_secs_f64()
-                    ),
-                    false,
-                );
+            status.clear();
+            writeln!(output)?;
+            let generated = session.position() - before;
+            remaining = remaining.saturating_sub(generated);
+            let seconds = start.elapsed().as_secs_f64();
+            eprintln!(
+                "Generation: {generated} tokens in {seconds:.2}s ({:.1} tok/s); context {}/{context}",
+                rate(generated, seconds),
+                session.position()
+            );
+            if needs_reset || !complete {
+                break;
+            }
+            let calls = match parser.finish() {
+                Ok(calls) => calls,
+                Err(error) => {
+                    writeln!(output, "Invalid model response: {error:#}. Use /reset.")?;
+                    needs_reset = true;
+                    break;
+                }
+            };
+            if calls.is_empty() {
+                break;
+            }
+            let interrupt = rink_tools::Interrupt::install()?;
+            let result = tool_loop.run(
+                &codec,
+                calls,
+                session.remaining_capacity().saturating_sub(1),
+                interrupt.flag(),
+                |event| display_tool(&mut output, event),
+            );
+            drop(interrupt);
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    writeln!(output, "Cannot continue tool round: {error:#}. Use /reset.")?;
+                    needs_reset = true;
+                    break;
+                }
+            };
+            let mut prefill = PrefillDisplay::new();
+            session.start_with(&result.tokens, 1, |model, tokens| {
+                model.prefill_greedy_with_progress(tokens, |event| prefill.observe(event))
+            })?;
+            parser = codec.parser();
+            stream = codec.tokenizer().decode_stream(true);
+            channel = Channel::Hidden;
+            if let Some(reason) = result.pause {
+                writeln!(output, "[{reason}]")?;
+                tool_pause = true;
+                break;
             }
         }
-        status.clear();
-        writeln!(output)?;
-        if session.pending() {
+        if !needs_reset && session.pending() && !tool_pause {
             if session.position() == context {
                 writeln!(
                     output,
@@ -276,13 +355,63 @@ pub fn run(
             }
         }
         output.flush()?;
-        let generated = session.position() - before;
-        let seconds = start.elapsed().as_secs_f64();
-        eprintln!(
-            "Generation: {generated} tokens in {seconds:.2}s ({:.1} tok/s); context {}/{context}",
-            rate(generated, seconds),
-            session.position()
-        );
     }
+    Ok(())
+}
+
+fn terminal_text(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() && c != '\n' && c != '\t' {
+            escaped.extend(c.escape_default());
+        } else {
+            escaped.push(c);
+        }
+    }
+    escaped
+}
+
+fn display_tool(output: &mut impl Write, event: ToolEvent<'_>) -> Result<()> {
+    match event {
+        ToolEvent::Starting(call) => {
+            let arguments = match &call.arguments {
+                Ok(args) => args
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| args.to_string()),
+                Err(_) => "[invalid arguments]".into(),
+            };
+            writeln!(
+                output,
+                "\nTool {}: {}",
+                call.name,
+                terminal_text(&arguments)
+            )?;
+        }
+        ToolEvent::Finished(name, result) => {
+            let value: serde_json::Value =
+                serde_json::from_str(&result.content).unwrap_or_default();
+            if name == "bash" && value.get("stdout").is_some() {
+                for key in ["stdout", "stderr"] {
+                    if let Some(text) = value[key].as_str().filter(|s| !s.is_empty()) {
+                        writeln!(output, "{}", terminal_text(text))?;
+                    }
+                }
+                writeln!(
+                    output,
+                    "[bash: exit {}; signal {}; timeout {}; cancelled {}; output truncated {}]",
+                    value["exit_code"],
+                    value["signal"],
+                    value["timed_out"],
+                    value["cancelled"],
+                    value["stdout_truncated"] == true || value["stderr_truncated"] == true
+                )?;
+            } else {
+                writeln!(output, "{}", terminal_text(&result.content))?;
+            }
+        }
+    }
+    output.flush()?;
     Ok(())
 }

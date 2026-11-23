@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/rink-core", "crates/rink-metal", "models/inkling", "crates/rink-cli"]
+members = ["crates/rink-core", "crates/rink-metal", "crates/rink-tools", "models/inkling", "crates/rink-cli"]
 resolver = "2"
 
 [workspace.package]
@@ -13,6 +13,7 @@ anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 half = "2"
+libc = "0.2"
 foreign-types = "0.5"
 memmap2 = "0.9"
 metal = "0.32"
@@ -24,6 +25,7 @@ tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 rink-core = { path = "crates/rink-core" }
 rink-metal = { path = "crates/rink-metal" }
 rink-inkling = { path = "models/inkling" }
+rink-tools = { path = "crates/rink-tools" }
 
 [profile.release]
 lto = "thin"

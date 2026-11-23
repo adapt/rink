@@ -851,6 +851,7 @@ dependencies = [
  "rink-core",
  "rink-inkling",
  "rink-metal",
+ "rink-tools",
  "serde_json",
  "tokenizers",
 ]
@@ -887,6 +888,16 @@ dependencies = [
  "metal",
  "objc",
  "rink-core",
+]
+
+[[package]]
+name = "rink-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

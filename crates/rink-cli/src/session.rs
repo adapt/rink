@@ -28,6 +28,12 @@ impl<M: AutoregressiveModel> Session<M> {
         self.model.position()
     }
 
+    pub fn remaining_capacity(&self) -> usize {
+        self.model
+            .context_capacity()
+            .saturating_sub(self.position())
+    }
+
     pub fn pending(&self) -> bool {
         matches!(self.state, State::Generating(_))
     }

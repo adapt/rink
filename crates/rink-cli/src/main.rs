@@ -3,14 +3,101 @@ use clap::{Parser, Subcommand};
 use rink_inkling::KvCachePrecision;
 use std::path::PathBuf;
 
+#[cfg(any(target_os = "macos", test))]
+mod agent;
 #[cfg(target_os = "macos")]
 mod bench;
 #[cfg(target_os = "macos")]
 mod chat;
+#[cfg(test)]
+#[path = "../../../models/inkling/tests/support/chat.rs"]
+mod chat_fixture;
 #[cfg(target_os = "macos")]
 mod progress;
 #[cfg(any(target_os = "macos", test))]
 mod session;
+
+#[derive(clap::Args)]
+struct ToolOptions {
+    /// Enable a host tool. Bash runs directly with your user permissions.
+    #[arg(long, value_parser = ["bash"])]
+    tool: Option<String>,
+    /// Starting directory for every tool call; defaults to the current directory.
+    #[arg(long, requires = "tool")]
+    cwd: Option<PathBuf>,
+    /// Default and maximum command duration in milliseconds.
+    #[arg(long, default_value_t = 120_000, value_parser = clap::value_parser!(u64).range(1..=3_600_000), requires = "tool")]
+    tool_timeout_ms: u64,
+    /// Maximum captured bytes per call, split equally between stdout and stderr.
+    #[arg(long, default_value_t = 16_384, value_parser = clap::value_parser!(u32).range(256..=1_048_576), requires = "tool")]
+    tool_output_bytes: u32,
+    /// Maximum executed tool rounds per user message, including /continue.
+    #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..=1024), requires = "tool")]
+    max_tool_rounds: u32,
+}
+
+#[cfg(test)]
+mod tool_option_tests {
+    use super::*;
+
+    #[test]
+    fn tools_are_opt_in_and_have_bounded_defaults() {
+        let cli = Cli::try_parse_from(["rink", "chat"]).unwrap();
+        let Command::Chat { tools, .. } = cli.command else {
+            unreachable!()
+        };
+        assert!(tools.tool.is_none());
+        assert!(tools.cwd.is_none());
+        assert_eq!(tools.tool_timeout_ms, 120_000);
+        assert_eq!(tools.tool_output_bytes, 16_384);
+        assert_eq!(tools.max_tool_rounds, 8);
+
+        let cli = Cli::try_parse_from([
+            "rink",
+            "chat",
+            "--tool",
+            "bash",
+            "--cwd",
+            "/tmp",
+            "--tool-timeout-ms",
+            "500",
+            "--tool-output-bytes",
+            "1024",
+            "--max-tool-rounds",
+            "2",
+        ])
+        .unwrap();
+        let Command::Chat { tools, .. } = cli.command else {
+            unreachable!()
+        };
+        assert_eq!(tools.tool.as_deref(), Some("bash"));
+        assert_eq!(tools.cwd, Some(PathBuf::from("/tmp")));
+        assert_eq!(tools.tool_timeout_ms, 500);
+        assert_eq!(tools.tool_output_bytes, 1024);
+        assert_eq!(tools.max_tool_rounds, 2);
+    }
+
+    #[test]
+    fn tool_options_require_opt_in_and_valid_limits() {
+        for args in [
+            vec!["--cwd", "/tmp"],
+            vec!["--tool-timeout-ms", "500"],
+            vec!["--tool-output-bytes", "1024"],
+            vec!["--max-tool-rounds", "2"],
+            vec!["--tool", "unknown"],
+            vec!["--tool", "bash", "--tool-timeout-ms", "0"],
+            vec!["--tool", "bash", "--tool-timeout-ms", "3600001"],
+            vec!["--tool", "bash", "--tool-output-bytes", "255"],
+            vec!["--tool", "bash", "--tool-output-bytes", "1048577"],
+            vec!["--tool", "bash", "--max-tool-rounds", "0"],
+        ] {
+            assert!(
+                Cli::try_parse_from([vec!["rink", "chat"], args.clone()].concat()).is_err(),
+                "{args:?}"
+            );
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -61,7 +148,7 @@ enum Command {
     Chat {
         #[arg(long, default_value = "checkpoints/inkling-2-mini")]
         model: PathBuf,
-        /// Maximum generated tokens per reply or /continue, including thinking.
+        /// Maximum generated tokens per reply or /continue, including thinking and tool calls.
         #[arg(long, default_value_t = 16384)]
         max_tokens: usize,
         /// Maximum cached sequence length across the entire conversation.
@@ -79,6 +166,8 @@ enum Command {
         /// Display the model's thinking as well as its answer.
         #[arg(long)]
         show_thinking: bool,
+        #[command(flatten)]
+        tools: ToolOptions,
     },
     /// Generate text on Metal from a local, original Hugging Face checkpoint.
     Generate {
@@ -235,6 +324,7 @@ fn main() -> Result<()> {
             prefill_batch,
             effort,
             show_thinking,
+            tools,
         } => {
             validate_prefill_batch(prefill_batch)?;
             ensure!(max_tokens > 0, "--max-tokens must be positive");
@@ -256,11 +346,12 @@ fn main() -> Result<()> {
                     show_thinking,
                     kv_cache,
                     prefill_batch,
+                    tools,
                 )
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (model, show_thinking, kv_cache, prefill_batch);
+                let _ = (model, show_thinking, kv_cache, prefill_batch, tools);
                 anyhow::bail!("chat requires macOS with Metal; CUDA is not implemented yet")
             }
         }
