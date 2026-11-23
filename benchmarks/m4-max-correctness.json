@@ -1,0 +1,154 @@
+{
+  "date": "2026-11-23",
+  "device": "Apple M4 Max",
+  "unified_memory_gib": 48,
+  "starting_revision": "90e888c",
+  "generation_fix_revision": "2e28dec",
+  "checkpoint": {
+    "repository": "thinkingmachines/Inkling-2-Mini",
+    "revision": "6e7c8248f75265bdd4fbab5273304243b5d8c2cb",
+    "files": [
+      {
+        "file": "config.json",
+        "bytes": 2699,
+        "sha256": "8216dd43157f5474cfff88f486a1e433fef703c674f694e485a86a761c412b1e",
+        "release_digest_matches": true
+      },
+      {
+        "file": "model-00001-of-00001.safetensors",
+        "bytes": 19526019168,
+        "sha256": "65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1",
+        "release_digest_matches": true
+      },
+      {
+        "file": "model.safetensors.index.json",
+        "bytes": 109300,
+        "sha256": "c1631065b7b00787993522dddc66a68b3abee869192977fb3dcb796e63bc5838",
+        "release_digest_matches": true
+      },
+      {
+        "file": "tokenizer.json",
+        "bytes": 26178678,
+        "sha256": "7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6",
+        "release_digest_matches": true
+      }
+    ]
+  },
+  "tests": {
+    "existing_full_workspace_passed": 83,
+    "normally_ignored_metal_tests_run": 41,
+    "cli_tests_after_fix_passed": 14,
+    "new_regressions": 2,
+    "distinct_tests_passed": 85
+  },
+  "text": [
+    {
+      "bit_identical": true,
+      "compared_logits": 24607134,
+      "context": 16384,
+      "kv_cache": "f16",
+      "mismatched_logits": 0,
+      "prefill_batch": 1024,
+      "positions_compared": 123,
+      "snapshot_sha256": "ffb9104d40b29829bf399d169b409a65980ae3c3ced7f43dbd03dcb1dc24939b"
+    },
+    {
+      "bit_identical": true,
+      "compared_logits": 24607134,
+      "context": 16384,
+      "kv_cache": "f32",
+      "mismatched_logits": 0,
+      "prefill_batch": 1024,
+      "positions_compared": 123,
+      "snapshot_sha256": "7e151667a3e448b62c17d87cd24dd6ae095b4c9254c2f112053677f673682582"
+    }
+  ],
+  "total_text_logits_compared": 49214268,
+  "text_reference": "Prior rink snapshots from 8c179d0, with digests preserved in earlier validation records; not an independent full-checkpoint text oracle.",
+  "vision": [
+    {
+      "features": 184320,
+      "image": "400x320.png",
+      "max_abs_error": 5.461275577545166e-06,
+      "relative_rms_error": 5.474572451037187e-06,
+      "rmse": 7.24439674824335e-07,
+      "seconds": 0.083307208,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 9216,
+      "image": "41x79.png",
+      "max_abs_error": 3.1888484954833984e-06,
+      "relative_rms_error": 4.451962904564872e-06,
+      "rmse": 7.174469270778025e-07,
+      "seconds": 0.012173708,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 78336,
+      "image": "641x41.png",
+      "max_abs_error": 7.3462724685668945e-06,
+      "relative_rms_error": 6.510674708804617e-06,
+      "rmse": 8.656480750240173e-07,
+      "seconds": 0.02472425,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 13824,
+      "image": "83x47.png",
+      "max_abs_error": 2.6226043701171875e-06,
+      "relative_rms_error": 3.5991231103121657e-06,
+      "rmse": 5.630595456142463e-07,
+      "seconds": 0.012031959,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 1209600,
+      "image": "840x1000.png",
+      "max_abs_error": 1.0788440704345703e-05,
+      "relative_rms_error": 7.099720393303017e-06,
+      "rmse": 8.735346495436707e-07,
+      "seconds": 0.271737167,
+      "tolerance_violations": 0
+    }
+  ],
+  "vision_features_compared": 1495296,
+  "vision_reference": "Fresh scripts/vision_reference.py native output from original weights; CPU PyTorch FP32 arithmetic; exact pixel patches and per-feature atol=2e-5, rtol=2e-5.",
+  "cli": {
+    "generation": [
+      "normal/raw parity",
+      "image with literal protocol marker"
+    ],
+    "default_chat": [
+      "text",
+      "manual image",
+      "visual history",
+      "reset",
+      "missing image recovery"
+    ],
+    "tool_chat": {
+      "checks": [
+        "text paging",
+        "two images",
+        "visual history without reread",
+        "reset",
+        "bash/read roundtrip",
+        "SIGINT cancellation",
+        "child cleanup"
+      ],
+      "token_limit_continuations": 6
+    },
+    "answers_verified_separately_from_tool_output": true
+  },
+  "checks": {
+    "fmt": true,
+    "clippy_all_targets_deny_warnings": true,
+    "diff_check": true
+  },
+  "limits": [
+    "Native text snapshots use 16K capacity and reach 8192 prompt tokens.",
+    "Default CLI reserves 256K but uses short conversations; full 256K active native history was not run.",
+    "Full native 1M inference was not run; it exceeds this Mac memory capacity.",
+    "This is correctness regression coverage, not a complete model-quality evaluation."
+  ]
+}

@@ -1,5 +1,8 @@
 # Metal inference benchmarks
 
+See the [correctness audit](correctness.md) for numerical references and native
+CLI checks, including images and tools.
+
 See [TensorOps prefill projections](tensor-prefill.md) for the latest kernel
 improvements, paired measurements and correctness checks.
 
