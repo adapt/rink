@@ -491,6 +491,51 @@ mod tests {
     }
 
     #[test]
+    fn tool_events_report_arguments_results_and_context_omissions_in_order() {
+        let codec = Codec::new(chat_fixture::tokenizer()).unwrap();
+        let mut registry = Registry::default();
+        registry.register(reader()).unwrap();
+        let mut tools = ToolLoop::new(registry, 8, true);
+        let args = json!({"path":"input.png"});
+        let calls = vec![Invocation {
+            name: "read".into(),
+            arguments: Ok(args.clone()),
+        }];
+        let minimum = codec.tool_result("read", OMITTED).unwrap().len();
+        let mut events = Vec::new();
+        let reply = tools
+            .run(&codec, calls, minimum, &AtomicBool::new(false), |event| {
+                match event {
+                    ToolEvent::Starting(call) => {
+                        assert_eq!(call.name, "read");
+                        assert_eq!(call.arguments.as_ref().unwrap(), &args);
+                        events.push("starting");
+                    }
+                    ToolEvent::Finished(name, result) => {
+                        assert_eq!(name, "read");
+                        assert!(!result.cancelled);
+                        assert_eq!(result.content.len(), 2);
+                        assert!(matches!(&result.content[0], ContentPart::Text(text) if text.contains("input.png")));
+                        assert!(matches!(&result.content[1], ContentPart::Image(image) if image.path.ends_with("input.png")));
+                        events.push("finished");
+                    }
+                    ToolEvent::Notice(message) => {
+                        assert_eq!(message, IMAGE_FULL);
+                        events.push("notice");
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(events, ["starting", "finished", "notice"]);
+        assert!(reply.token_budget() <= minimum);
+        assert_eq!(
+            reply.tokens(),
+            codec.tool_result("read", IMAGE_FULL).unwrap()
+        );
+    }
+
+    #[test]
     fn multiple_image_results_preserve_order_cache_and_continuation_without_reinsertion() {
         let codec = Codec::new(chat_fixture::tokenizer()).unwrap();
         let mut registry = Registry::default();

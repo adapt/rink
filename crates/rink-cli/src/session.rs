@@ -213,16 +213,25 @@ mod tests {
     #[test]
     fn bounds_include_eos_and_rejections_preserve_the_cache() {
         let mut s = session(4);
+        // The UI preflight must reject invalid budgets without starting a turn.
+        assert!(s.check_prompt(&[1, 1], 3).is_err());
+        assert!(s.check_prompt(&[], 3).is_err());
+        assert!(s.check_prompt(&[1], usize::MAX).is_err());
+        s.check_prompt(&[1], 3).unwrap();
+        assert_eq!(s.position(), 0);
+        assert!(!s.pending());
         assert!(s.start(&[1, 1], 3).is_err());
         assert!(s.start(&[], 3).is_err());
         assert!(s.start(&[1], usize::MAX).is_err());
         assert_eq!(s.position(), 0);
         s.start(&[1], 2).unwrap();
+        assert!(s.check_prompt(&[1], 1).is_err());
         s.next_token().unwrap();
         s.next_token().unwrap();
         assert_eq!(s.reply_budget(100).unwrap(), 1);
         assert_eq!(s.next_token().unwrap(), None);
         assert_eq!(s.position(), 4);
+        assert!(s.check_prompt(&[1], 1).is_err());
         assert!(s.start(&[1], 1).is_err());
         assert_eq!(s.model.tokens, [1, 2, 3, 0]);
     }
