@@ -1,0 +1,83 @@
+{
+  "baseline_revision": "a0e92fb",
+  "workspace_tests_passed": 59,
+  "text": [
+    {
+      "bit_identical": true,
+      "compared_logits": 24607134,
+      "context": 16384,
+      "kv_cache": "f16",
+      "mismatched_logits": 0,
+      "prefill_batch": 1024
+    },
+    {
+      "bit_identical": true,
+      "compared_logits": 24607134,
+      "context": 16384,
+      "kv_cache": "f32",
+      "mismatched_logits": 0,
+      "prefill_batch": 1024
+    }
+  ],
+  "vision_reference": [
+    {
+      "features": 184320,
+      "image": "400x320.png",
+      "max_abs_error": 5.461275577545166e-06,
+      "relative_rms_error": 5.474572451037187e-06,
+      "rmse": 7.24439674824335e-07,
+      "seconds": 0.07427875,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 9216,
+      "image": "41x79.png",
+      "max_abs_error": 3.1888484954833984e-06,
+      "relative_rms_error": 4.451962904564872e-06,
+      "rmse": 7.174469270778025e-07,
+      "seconds": 0.011664459,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 78336,
+      "image": "641x41.png",
+      "max_abs_error": 7.3462724685668945e-06,
+      "relative_rms_error": 6.510674708804617e-06,
+      "rmse": 8.656480750240173e-07,
+      "seconds": 0.023997167,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 13824,
+      "image": "83x47.png",
+      "max_abs_error": 2.6226043701171875e-06,
+      "relative_rms_error": 3.5991231103121657e-06,
+      "rmse": 5.630595456142463e-07,
+      "seconds": 0.010849375,
+      "tolerance_violations": 0
+    },
+    {
+      "features": 1209600,
+      "image": "840x1000.png",
+      "max_abs_error": 1.0788440704345703e-05,
+      "relative_rms_error": 7.099720393303017e-06,
+      "rmse": 8.735346495436707e-07,
+      "seconds": 0.269066208,
+      "tolerance_violations": 0
+    }
+  ],
+  "vision_features_compared": 1495296,
+  "image": {
+    "bit_identical": true,
+    "compared_logits": 6401856,
+    "mismatched_logits": 0,
+    "context": 262144,
+    "kv_cache": "f16",
+    "prefill_batch": 1024,
+    "prompt_tokens": 10342,
+    "image_tokens": 10318,
+    "continuation_steps": 32,
+    "reference_and_updated_match_private_snapshot": true
+  },
+  "total_logits_compared": 55616124
+}

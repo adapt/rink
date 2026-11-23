@@ -1,5 +1,8 @@
 # Faster image encoding and native expert prefill
 
+The subsequent [prefill workgroup update](prefill-compact.md) builds on these
+changes and measures against this version.
+
 These changes keep the checkpoint weights, image resolution, model passes,
 FP32 arithmetic and existing device tensor buffers. The baseline is `c729831`.
 Measurements use the 48 GiB Apple M4 Max and checkpoint revision

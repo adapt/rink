@@ -1,0 +1,1546 @@
+{
+  "date": "2026-11-22",
+  "baseline_revision": "a0e92fb",
+  "device": "Apple M4 Max",
+  "method": "Development probes for the selected kernel bodies, before integration under their production entry-point names. Four alternating timing rounds after an excluded warmup. Dense baseline is matmul_prefill_m64; expert baseline is the native specialization from a0e92fb. Synthetic weights and routes do not establish full-model speedups. Outputs and guards match exactly; no device allocation occurs during dispatch.",
+  "dense": [
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0004988437576685101,
+      "rows": 1024,
+      "trials": [
+        0.0006785208242945373,
+        0.0005319374904502183,
+        0.00046575002488680184,
+        0.0004656249948311597
+      ],
+      "compact": false
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0004902187647530809,
+      "rows": 1024,
+      "trials": [
+        0.001041750016156584,
+        0.0005199062579777092,
+        0.00046053127152845263,
+        0.00045608333311975
+      ],
+      "compact": true
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0007660833362024277,
+      "rows": 3072,
+      "trials": [
+        0.000749937491491437,
+        0.0007651041669305414,
+        0.0008724687504582107,
+        0.0007670625054743141
+      ],
+      "compact": false
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0007053229201119393,
+      "rows": 3072,
+      "trials": [
+        0.0008117291727103293,
+        0.0007054583402350545,
+        0.0007051874999888241,
+        0.0007048958213999867
+      ],
+      "compact": true
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0008364218665519729,
+      "rows": 2304,
+      "trials": [
+        0.0008304583316203207,
+        0.0008993437513709068,
+        0.0008143437444232404,
+        0.0008423854014836252
+      ],
+      "compact": false
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0007737239502603188,
+      "rows": 2304,
+      "trials": [
+        0.0007758958090562373,
+        0.0007715520914644003,
+        0.0007713749946560711,
+        0.0008023437694646418
+      ],
+      "compact": true
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0001418281317455694,
+      "rows": 1024,
+      "trials": [
+        0.00014207290951162577,
+        0.00014187500346451998,
+        0.00014171874499879777,
+        0.00014178126002661884
+      ],
+      "compact": false
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00013923436927143484,
+      "rows": 1024,
+      "trials": [
+        0.00013913540169596672,
+        0.00013933333684690297,
+        0.00013960414798930287,
+        0.00013878123718313873
+      ],
+      "compact": true
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00042961459257639945,
+      "rows": 4096,
+      "trials": [
+        0.0004303125024307519,
+        0.0004282604204490781,
+        0.00042982291779480875,
+        0.00042940626735799015
+      ],
+      "compact": false
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00040179687493946403,
+      "rows": 4096,
+      "trials": [
+        0.00039884375291876495,
+        0.0004047499969601631,
+        0.0005182604072615504,
+        0.00039853123598732054
+      ],
+      "compact": true
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0005574947863351554,
+      "rows": 1024,
+      "trials": [
+        0.0005575104150921106,
+        0.0005567604093812406,
+        0.000631270813755691,
+        0.0005574791575782001
+      ],
+      "compact": false
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0005340364441508427,
+      "rows": 1024,
+      "trials": [
+        0.0005330208223313093,
+        0.0005339478957466781,
+        0.0005383854149840772,
+        0.0005341249925550073
+      ],
+      "compact": true
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.0017735260480549186,
+      "rows": 4096,
+      "trials": [
+        0.001762364583555609,
+        0.0019194062624592334,
+        0.0017599999846424907,
+        0.0017846875125542283
+      ],
+      "compact": false
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.0016694166552042589,
+      "rows": 4096,
+      "trials": [
+        0.0016781249723862857,
+        0.0015712916501797736,
+        0.0017156562535092235,
+        0.001660708338022232
+      ],
+      "compact": true
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0011094583314843476,
+      "rows": 2304,
+      "trials": [
+        0.0011543958389665931,
+        0.001084718736819923,
+        0.0011250624957028776,
+        0.0010938541672658175
+      ],
+      "compact": false
+    },
+    {
+      "batch": 512,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.001007796876365319,
+      "rows": 2304,
+      "trials": [
+        0.0010104062384925783,
+        0.0010051875142380595,
+        0.0010397187725175172,
+        0.0010051875142380595
+      ],
+      "compact": true
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0006648749986197799,
+      "rows": 1024,
+      "trials": [
+        0.0008650833333376795,
+        0.0007857083401177078,
+        0.000544041657121852,
+        0.0005283853970468044
+      ],
+      "compact": false
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.000673822927637957,
+      "rows": 1024,
+      "trials": [
+        0.0010347395727876574,
+        0.0007826979272067547,
+        0.0005649479280691594,
+        0.0005271249974612147
+      ],
+      "compact": true
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0014618020941270515,
+      "rows": 3072,
+      "trials": [
+        0.00144671875750646,
+        0.001463406253606081,
+        0.0015529687516391277,
+        0.001460197934648022
+      ],
+      "compact": false
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0013705833262065426,
+      "rows": 3072,
+      "trials": [
+        0.0014211562520358711,
+        0.001389572920743376,
+        0.001351593731669709,
+        0.0013513749872799963
+      ],
+      "compact": true
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00147150520933792,
+      "rows": 2304,
+      "trials": [
+        0.0015768645680509508,
+        0.0014714166754856706,
+        0.0014692916884087026,
+        0.0014715937431901693
+      ],
+      "compact": false
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.001409770833561197,
+      "rows": 2304,
+      "trials": [
+        0.0013671562483068556,
+        0.0013716979301534593,
+        0.0014478437369689345,
+        0.0014661875029560179
+      ],
+      "compact": true
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00023834894818719476,
+      "rows": 1024,
+      "trials": [
+        0.0002364375104662031,
+        0.00024503126041963696,
+        0.0002386666601523757,
+        0.00023803123622201383
+      ],
+      "compact": false
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00023465623962692916,
+      "rows": 1024,
+      "trials": [
+        0.0002345937245991081,
+        0.00032362499041482806,
+        0.00023425000836141407,
+        0.00023471875465475023
+      ],
+      "compact": true
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0009173073049169034,
+      "rows": 4096,
+      "trials": [
+        0.0009656145994085819,
+        0.0008690000104252249,
+        0.0008346145914401859,
+        0.0009746562573127449
+      ],
+      "compact": false
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0007640260591870174,
+      "rows": 4096,
+      "trials": [
+        0.0007636146037839353,
+        0.0007635312504135072,
+        0.0007644375145900995,
+        0.0007668125035706908
+      ],
+      "compact": true
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0009364270808873698,
+      "rows": 1024,
+      "trials": [
+        0.0009365208097733557,
+        0.0009408958430867642,
+        0.0009348750172648579,
+        0.0009363333520013839
+      ],
+      "compact": false
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0009416823013452813,
+      "rows": 1024,
+      "trials": [
+        0.0009093229309655726,
+        0.00097404167172499,
+        0.000908916670596227,
+        0.0009792083292268217
+      ],
+      "compact": true
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.003540000005159527,
+      "rows": 4096,
+      "trials": [
+        0.0034865104244090617,
+        0.003606614569434896,
+        0.0035934895859099925,
+        0.0034754791704472154
+      ],
+      "compact": false
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.0031358333362732083,
+      "rows": 4096,
+      "trials": [
+        0.0030674375011585653,
+        0.0031615000043530017,
+        0.0031803229067008942,
+        0.003110166668193415
+      ],
+      "compact": true
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.002028291652095504,
+      "rows": 2304,
+      "trials": [
+        0.0020779062469955534,
+        0.0019837395811919123,
+        0.002072843722999096,
+        0.001976989588001743
+      ],
+      "compact": false
+    },
+    {
+      "batch": 1024,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0018348698067711666,
+      "rows": 2304,
+      "trials": [
+        0.0018050416838377714,
+        0.0018985937349498272,
+        0.001789833331713453,
+        0.0018646979297045618
+      ],
+      "compact": true
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0019426145736360922,
+      "rows": 1024,
+      "trials": [
+        0.0019129895663354546,
+        0.0019948854169342667,
+        0.00197223958093673,
+        0.0018516874988563359
+      ],
+      "compact": false
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0017892291507450864,
+      "rows": 1024,
+      "trials": [
+        0.0018092395621351898,
+        0.001769218739354983,
+        0.0017461250245105475,
+        0.0018789479217957705
+      ],
+      "compact": true
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.005749765638029203,
+      "rows": 3072,
+      "trials": [
+        0.005669906240655109,
+        0.005746625014580786,
+        0.005830874986713752,
+        0.005752906261477619
+      ],
+      "compact": false
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0051811093726428226,
+      "rows": 3072,
+      "trials": [
+        0.005168916657567024,
+        0.005192885437281802,
+        0.0052096250001341105,
+        0.005169333308003843
+      ],
+      "compact": true
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.005714192710001953,
+      "rows": 2304,
+      "trials": [
+        0.005807385401567444,
+        0.005668322904966772,
+        0.0056697291729506105,
+        0.005758656247053295
+      ],
+      "compact": false
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.005272317706840113,
+      "rows": 2304,
+      "trials": [
+        0.00519351041293703,
+        0.005231031245784834,
+        0.005335395835572854,
+        0.005313604167895392
+      ],
+      "compact": true
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0008253906271420419,
+      "rows": 1024,
+      "trials": [
+        0.000826312490971759,
+        0.0008246249926742166,
+        0.00082562500028871,
+        0.0008251562539953738
+      ],
+      "compact": false
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.000763578136684373,
+      "rows": 1024,
+      "trials": [
+        0.0007628125022165477,
+        0.0007643437711521983,
+        0.0008948437462095171,
+        0.0007620000105816871
+      ],
+      "compact": true
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00339886978326831,
+      "rows": 4096,
+      "trials": [
+        0.0034003020846284926,
+        0.0034162916417699307,
+        0.0032964374986477196,
+        0.0033974374819081277
+      ],
+      "compact": false
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.003061859359149821,
+      "rows": 4096,
+      "trials": [
+        0.0029581979324575514,
+        0.003098937508184463,
+        0.003092874976573512,
+        0.0030308437417261302
+      ],
+      "compact": true
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0034115156304324046,
+      "rows": 1024,
+      "trials": [
+        0.0033935937681235373,
+        0.0034405520709697157,
+        0.0033300937502644956,
+        0.003429437492741272
+      ],
+      "compact": false
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.003129354168777354,
+      "rows": 1024,
+      "trials": [
+        0.0030576458375435323,
+        0.0031278020760510117,
+        0.0031309062615036964,
+        0.003169218747643754
+      ],
+      "compact": true
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.014221859382814728,
+      "rows": 4096,
+      "trials": [
+        0.014227843756088987,
+        0.014215875009540468,
+        0.014185229170834646,
+        0.014487979176919907
+      ],
+      "compact": false
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.012170026035164483,
+      "rows": 4096,
+      "trials": [
+        0.012092999997548759,
+        0.012187031243229285,
+        0.012153020827099681,
+        0.012188708322355524
+      ],
+      "compact": true
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.007802010411978699,
+      "rows": 2304,
+      "trials": [
+        0.007848166656913236,
+        0.007776124984957278,
+        0.00782789583900012,
+        0.007718802080489695
+      ],
+      "compact": false
+    },
+    {
+      "batch": 4096,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0068442499905359,
+      "rows": 2304,
+      "trials": [
+        0.00685031249304302,
+        0.006740718730725348,
+        0.0069054270861670375,
+        0.00683818748802878
+      ],
+      "compact": true
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.019095947936875746,
+      "rows": 1024,
+      "trials": [
+        0.01911747918347828,
+        0.019163104181643575,
+        0.019032729178434238,
+        0.01907441669027321
+      ],
+      "compact": false
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.01749316147470381,
+      "rows": 1024,
+      "trials": [
+        0.01736834374605678,
+        0.01755853125359863,
+        0.017516687512397766,
+        0.017469635437009856
+      ],
+      "compact": true
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.057831354162772186,
+      "rows": 3072,
+      "trials": [
+        0.057685645821038634,
+        0.05798843750380911,
+        0.057630499999504536,
+        0.05797706250450574
+      ],
+      "compact": false
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 2304,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.05187916665454395,
+      "rows": 3072,
+      "trials": [
+        0.05168471875367686,
+        0.05206803124747239,
+        0.05175667707226239,
+        0.05200165623682551
+      ],
+      "compact": true
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.057587671879446134,
+      "rows": 2304,
+      "trials": [
+        0.05739003123017028,
+        0.05772817708202638,
+        0.057747822924284264,
+        0.05744716667686589
+      ],
+      "compact": false
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 3072,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.05153572396375239,
+      "rows": 2304,
+      "trials": [
+        0.05154791666427627,
+        0.051948791689937934,
+        0.051523531263228506,
+        0.05135886458447203
+      ],
+      "compact": true
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00850481771340128,
+      "rows": 1024,
+      "trials": [
+        0.008482072909828275,
+        0.008478656265651807,
+        0.00854981248266995,
+        0.008527562516974285
+      ],
+      "compact": false
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.00763059375458397,
+      "rows": 1024,
+      "trials": [
+        0.007479312509531155,
+        0.00759890626068227,
+        0.0076622812484856695,
+        0.007706114585744217
+      ],
+      "compact": true
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.034415546877426095,
+      "rows": 4096,
+      "trials": [
+        0.03445739584276453,
+        0.034373697912087664,
+        0.03449287501280196,
+        0.03417646876187064
+      ],
+      "compact": false
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 1024,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.030465895833913237,
+      "rows": 4096,
+      "trials": [
+        0.030289062502561137,
+        0.030455802101641893,
+        0.03048853125073947,
+        0.03047598956618458
+      ],
+      "compact": true
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0343894479010487,
+      "rows": 1024,
+      "trials": [
+        0.03436180207063444,
+        0.034417093731462955,
+        0.03419052084791474,
+        0.0344265625171829
+      ],
+      "compact": false
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.030197526051779278,
+      "rows": 1024,
+      "trials": [
+        0.03013047916465439,
+        0.0301621145918034,
+        0.030271499999798834,
+        0.030232937511755154
+      ],
+      "compact": true
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.14474339583830442,
+      "rows": 4096,
+      "trials": [
+        0.14138146876939572,
+        0.14124829164939,
+        0.14910740626510233,
+        0.14810532290721312
+      ],
+      "compact": false
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 1024,
+      "median_gpu_seconds": 0.12896834376442712,
+      "rows": 4096,
+      "trials": [
+        0.11961105206864886,
+        0.1311845937743783,
+        0.132470270851627,
+        0.12675209375447594
+      ],
+      "compact": true
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.07730307812744286,
+      "rows": 2304,
+      "trials": [
+        0.07717486456385814,
+        0.07723515626275912,
+        0.07752018750761636,
+        0.0773709999921266
+      ],
+      "compact": false
+    },
+    {
+      "batch": 41273,
+      "bit_identical": true,
+      "cols": 4096,
+      "device_buffer_allocations": 0,
+      "input_offset": 0,
+      "median_gpu_seconds": 0.0671655677142553,
+      "rows": 2304,
+      "trials": [
+        0.06725094793364406,
+        0.06707299998379312,
+        0.06708018749486655,
+        0.06782043751445599
+      ],
+      "compact": true
+    }
+  ],
+  "experts": [
+    {
+      "batch": 512,
+      "down": false,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.004776828136527911,
+      "sparse": false,
+      "trials": [
+        0.004775343753863126,
+        0.004776687506819144,
+        0.004776968766236678,
+        0.004777947906404734
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 512,
+      "down": false,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.0042049062612932175,
+      "sparse": false,
+      "trials": [
+        0.004203291668090969,
+        0.004204281256534159,
+        0.004205531266052276,
+        0.004205781238852069
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.008446130203083158,
+      "sparse": false,
+      "trials": [
+        0.008429791691014543,
+        0.00844385416712612,
+        0.008448406239040196,
+        0.008461281249765307
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.007668098958674818,
+      "sparse": false,
+      "trials": [
+        0.0076616145961452276,
+        0.00766330209444277,
+        0.007672895822906867,
+        0.007678822934394702
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.008804911456536502,
+      "sparse": true,
+      "trials": [
+        0.008804416662314907,
+        0.008804760436760262,
+        0.008805062476312742,
+        0.008818614587653428
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.00784670832217671,
+      "sparse": true,
+      "trials": [
+        0.007844437495805323,
+        0.007846343738492578,
+        0.007847072905860841,
+        0.00786159373819828
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 2048,
+      "down": false,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.01666306248807814,
+      "sparse": false,
+      "trials": [
+        0.01665200002025813,
+        0.016662281239405274,
+        0.016663843736751005,
+        0.016687645838828757
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 2048,
+      "down": false,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.015230901044560596,
+      "sparse": false,
+      "trials": [
+        0.015226406248984858,
+        0.015228208329062909,
+        0.015233593760058284,
+        0.015269750001607463
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 512,
+      "down": true,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.0023933697812026367,
+      "sparse": false,
+      "trials": [
+        0.0023872812453191727,
+        0.0023931770701892674,
+        0.002393562492216006,
+        0.002394312497926876
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 512,
+      "down": true,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.002136578143108636,
+      "sparse": false,
+      "trials": [
+        0.002135197923053056,
+        0.0021357187652029097,
+        0.0021374375210143626,
+        0.0021508645731955767
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.0042968281195499,
+      "sparse": false,
+      "trials": [
+        0.0042794374749064445,
+        0.004280437482520938,
+        0.004313218756578863,
+        0.004356604156782851
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.0038187916652532294,
+      "sparse": false,
+      "trials": [
+        0.0038153749774210155,
+        0.0038184895820450038,
+        0.003819093748461455,
+        0.0038493750034831464
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.004463630204554647,
+      "sparse": true,
+      "trials": [
+        0.004462270822841674,
+        0.0044629166659433395,
+        0.004464343743165955,
+        0.004474312503589317
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.003980989597039297,
+      "sparse": true,
+      "trials": [
+        0.003978562512202188,
+        0.0039797187491785735,
+        0.003982260444900021,
+        0.003991624980699271
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 2048,
+      "down": true,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.008447494779829867,
+      "sparse": false,
+      "trials": [
+        0.008441468758974224,
+        0.008442124992143363,
+        0.008452864567516372,
+        0.008455729170236737
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 2048,
+      "down": true,
+      "exact": true,
+      "format": 0,
+      "median_gpu_seconds": 0.00753064063610509,
+      "sparse": false,
+      "trials": [
+        0.007528562506195158,
+        0.007530041679274291,
+        0.00753123959293589,
+        0.007549270841991529
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 512,
+      "down": false,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.005405171890743077,
+      "sparse": false,
+      "trials": [
+        0.0054033437627367675,
+        0.005404937517596409,
+        0.005405406263889745,
+        0.005406447919085622
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 512,
+      "down": false,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.004852854166529141,
+      "sparse": false,
+      "trials": [
+        0.0048516249808017164,
+        0.0048523958248551935,
+        0.004853312508203089,
+        0.004854927072301507
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.008963802072685212,
+      "sparse": false,
+      "trials": [
+        0.008955583325587213,
+        0.008957249985542148,
+        0.008970354159828275,
+        0.008984604151919484
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.008262833332992159,
+      "sparse": false,
+      "trials": [
+        0.00824875000398606,
+        0.00824950000969693,
+        0.008276166656287387,
+        0.008276968757854775
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.009348296851385385,
+      "sparse": true,
+      "trials": [
+        0.00933918749797158,
+        0.009341156226582825,
+        0.009355437476187944,
+        0.009357968752738088
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": false,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.00852931771078147,
+      "sparse": true,
+      "trials": [
+        0.008528406266123056,
+        0.008528916659997776,
+        0.008529718761565164,
+        0.00856061457307078
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 2048,
+      "down": false,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.017654552080784924,
+      "sparse": false,
+      "trials": [
+        0.017648812499828637,
+        0.017649249988608062,
+        0.017659854172961786,
+        0.01766298955772072
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 2048,
+      "down": false,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.01632693747524172,
+      "sparse": false,
+      "trials": [
+        0.016313270840328187,
+        0.01632162497844547,
+        0.01633224997203797,
+        0.016336697910446674
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 512,
+      "down": true,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.0027215937589062378,
+      "sparse": false,
+      "trials": [
+        0.002720854157814756,
+        0.002721177093917504,
+        0.0027220104238949716,
+        0.0027359270898159593
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 512,
+      "down": true,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.0024573229165980592,
+      "sparse": false,
+      "trials": [
+        0.002456874994095415,
+        0.0024573020928073674,
+        0.002457343740388751,
+        0.0024582291662227362
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.004521994793321937,
+      "sparse": false,
+      "trials": [
+        0.004521604161709547,
+        0.004521697905147448,
+        0.0045222916814964265,
+        0.004522437491687015
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.004139557291637175,
+      "sparse": false,
+      "trials": [
+        0.004137062496738508,
+        0.004138749995036051,
+        0.004140364588238299,
+        0.004153718764428049
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.004704015620518476,
+      "sparse": true,
+      "trials": [
+        0.004702572914538905,
+        0.004703749989857897,
+        0.004704281251179054,
+        0.004744781239423901
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 1024,
+      "down": true,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.004286260416847654,
+      "sparse": true,
+      "trials": [
+        0.004279312503058463,
+        0.004279499989934266,
+        0.004293020843761042,
+        0.004354750009952113
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 2048,
+      "down": true,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.00890813019941561,
+      "sparse": false,
+      "trials": [
+        0.008895052102161571,
+        0.008907760406145826,
+        0.008908499992685392,
+        0.00890903125400655
+      ],
+      "compact": false,
+      "device_buffer_allocations": 0
+    },
+    {
+      "batch": 2048,
+      "down": true,
+      "exact": true,
+      "format": 1,
+      "median_gpu_seconds": 0.008134062503813766,
+      "sparse": false,
+      "trials": [
+        0.008124624990159646,
+        0.008127875014906749,
+        0.008140249992720783,
+        0.00814228126546368
+      ],
+      "compact": true,
+      "device_buffer_allocations": 0
+    }
+  ]
+}

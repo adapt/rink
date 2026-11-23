@@ -144,8 +144,8 @@ fn main() -> anyhow::Result<()> {
                                 d.dispatch(
                                     &candidate,
                                     &args,
-                                    rows.div_ceil(64) * max_tiles * 256,
-                                    256,
+                                    rows.div_ceil(64) * max_tiles * 128,
+                                    128,
                                 )?;
                             }
                         }

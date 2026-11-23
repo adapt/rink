@@ -385,8 +385,13 @@ impl<'a, A: Accelerator> Runner<'a, A> {
         } else {
             16
         };
+        let compact =
+            tile == 64 && (rows >= 2048 || batch >= 4096) && cols % 32 == 0 && w.dtype == 1;
+        let threads = if compact { 128 } else { 256 };
         self.dispatch(
-            if tile == 64 {
+            if compact {
+                "matmul_prefill_compact"
+            } else if tile == 64 {
                 "matmul_prefill_m64"
             } else if wide {
                 "matmul_prefill_m32"
@@ -396,8 +401,8 @@ impl<'a, A: Accelerator> Runner<'a, A> {
             &[out, &w.buffer, x],
             &[rows, cols, w.dtype, batch, offset],
             &[],
-            rows.div_ceil(if wide { 64 } else { 32 }) * batch.div_ceil(tile) * 256,
-            256,
+            rows.div_ceil(if wide { 64 } else { 32 }) * batch.div_ceil(tile) * threads,
+            threads,
         )
     }
     fn norm(

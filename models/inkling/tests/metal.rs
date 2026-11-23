@@ -2542,11 +2542,15 @@ fn projection_scheduling_preserves_every_output_bit() {
                         );
                     }
                     if batch > 1 {
-                        for (name, tile_m, tile_n) in [
-                            ("matmul_packed", 16, 32),
-                            ("matmul_prefill_m32", 32, 64),
-                            ("matmul_prefill_m64", 64, 64),
+                        for (name, tile_m, tile_n, threads) in [
+                            ("matmul_packed", 16, 32, 256),
+                            ("matmul_prefill_m32", 32, 64, 256),
+                            ("matmul_prefill_m64", 64, 64, 256),
+                            ("matmul_prefill_compact", 64, 64, 128),
                         ] {
+                            if name == "matmul_prefill_compact" && cols % 32 != 0 {
+                                continue;
+                            }
                             let packed = upload(&mut d, &initial);
                             // SAFETY: four-wide staging handles partial vectors;
                             // output tile geometry and guards are unchanged.
@@ -2556,8 +2560,8 @@ fn projection_scheduling_preserves_every_output_bit() {
                                     name,
                                     &[&packed, &weights, &input],
                                     p,
-                                    rows.div_ceil(tile_n) * batch.div_ceil(tile_m) * 256,
-                                    256,
+                                    rows.div_ceil(tile_n) * batch.div_ceil(tile_m) * threads,
+                                    threads,
                                 )
                                 .unwrap();
                             }
@@ -2827,6 +2831,7 @@ fn native_prefill_experts_preserve_sparse_tiles_and_guards() {
                 }
                 let mut reference = Vec::new();
                 for kernel in ["expert_matmul_prefill", name] {
+                    let threads = if kernel == name { 128 } else { 256 };
                     d.write(&output, 0, bytemuck::cast_slice(&poison)).unwrap();
                     // SAFETY: checked native shape, exact same route list, full guarded output.
                     unsafe {
@@ -2842,8 +2847,8 @@ fn native_prefill_experts_preserve_sparse_tiles_and_guards() {
                                     &[rows, cols, top, format, usize::from(down), batch],
                                     &[],
                                 ),
-                                rows.div_ceil(64) * max_tiles * 256,
-                                256,
+                                rows.div_ceil(64) * max_tiles * threads,
+                                threads,
                             )
                             .unwrap();
                     }

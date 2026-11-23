@@ -75,6 +75,7 @@ impl<A: Accelerator> Kernels<A> {
             "matmul_packed",
             "matmul_prefill_m32",
             "matmul_prefill_m64",
+            "matmul_prefill_compact",
             "expert_matmul_prefill",
             "expert_prefill_nvfp4_up",
             "expert_prefill_nvfp4_down",

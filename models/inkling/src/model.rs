@@ -385,8 +385,15 @@ impl<A: Accelerator> Inkling<A> {
             } else {
                 16
             };
+            let compact = tile == 64
+                && (rows >= 2048 || self.batch >= 4096)
+                && cols % 32 == 0
+                && w.dtype == 1;
+            let threads = if compact { 128 } else { 256 };
             self.run(
-                if wide {
+                if compact {
+                    "matmul_prefill_compact"
+                } else if wide {
                     if tile == 32 {
                         "matmul_prefill_m32"
                     } else {
@@ -398,8 +405,8 @@ impl<A: Accelerator> Inkling<A> {
                 &[&y, &w.buffer, x],
                 &[rows, cols, w.dtype, self.batch, offset],
                 &[],
-                rows.div_ceil(if wide { 64 } else { 32 }) * self.batch.div_ceil(tile) * 256,
-                256,
+                rows.div_ceil(if wide { 64 } else { 32 }) * self.batch.div_ceil(tile) * threads,
+                threads,
             )?;
             return Ok(y);
         }
@@ -919,14 +926,18 @@ impl<A: Accelerator> Inkling<A> {
         if let Some(groups) = groups {
             // NVFP4 tables are already resident for decode. Reuse the same
             // exact values in prefill without allocating another workspace.
-            let threads = if groups.tile_size >= 32 { 256 } else { 128 };
+            let native = groups.tile_size == 64
+                && rows == 2304
+                && top == 8
+                && cols == if down { 1152 } else { 2304 }
+                && format < 2;
+            let threads = if !native && groups.tile_size >= 32 {
+                256
+            } else {
+                128
+            };
             self.run(
-                if groups.tile_size == 64
-                    && rows == 2304
-                    && top == 8
-                    && cols == if down { 1152 } else { 2304 }
-                    && format < 2
-                {
+                if native {
                     match (format, down) {
                         (0, false) => "expert_prefill_nvfp4_up",
                         (0, true) => "expert_prefill_nvfp4_down",

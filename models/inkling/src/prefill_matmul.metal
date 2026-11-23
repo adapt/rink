@@ -159,15 +159,59 @@ kernel void expert_matmul_prefill(device float* y [[buffer(0)]],device const uch
     else prefill_expert_pipeline<64,64,16,true>(y,w,scales,factors,x,groups,tiles,table,p.u[0],p.u[1],p.u[2],p.u[3],p.u[4],p.u[5],group,tid,scratch);
 }
 
+// Four SIMD groups compute the same ordered FP32 matrix products. Separate
+// input/weight loaders copy 16 elements each, sharing quantization scale reads.
+// Two staging banks fit in the existing 16 KiB scratch. Each iteration writes
+// the other bank, so one barrier protects both the next read and the next reuse.
+template<uint M,uint Cols,uint Format,bool Down>
+void prefill_native_expert_pipeline(device float* y,device const uchar* w,device const uchar* scales,device const float* x,device const uint* groups,device const uint* tiles,device const float* table,uint batch,uint group,uint tid,threadgroup float* scratch){
+    uint tile=group/36,row=(group%36)*64,expert=tiles[1+2*tile],first=tiles[2+2*tile],stride=batch+1,count=groups[expert*stride],sg=tid/32;
+    bool input=tid<64;uint r=tid%64;
+    bool valid=!input || (r<M && first+r<count);
+    uint slot=input && valid?groups[expert*stride+1+first+r]:0;
+    uint idx=input?(Down?slot:slot/8)*Cols:(expert*2304+row+r)*Cols;
+    simdgroup_float8x8 sum[M/16][4];
+    for(uint mi=0;mi<M/16;mi++)for(uint ni=0;ni<4;ni++)sum[mi][ni]=make_filled_simdgroup_matrix<float,8,8>(0.f);
+    float4 next[4];
+    for(uint iteration=0;iteration<=Cols/16;iteration++){
+        uint base=iteration*16;
+        if(base<Cols){
+            for(uint v=0;v<4;v++)next[v]=0;
+            if(valid){
+                if(input){for(uint v=0;v<4;v++)next[v]=float4(*((device const packed_float4*)(x+idx+base+v*4)));}
+                else if(Format==0){
+                    uint2 codes=*((device const uint2*)(w+(idx+base)/2));uint lookup=expert*4096+uint(scales[(idx+base)/16])*16;
+                    for(uint v=0;v<4;v++)for(uint j=0;j<4;j++)next[v][j]=table[lookup+((codes[v/2]>>((v%2)*16+j*4))&15)];
+                }else{
+                    float scale=scale8(scales[(idx+base)/32]);
+                    for(uint v=0;v<4;v++){uchar4 codes=*((device const uchar4*)(w+idx+base+v*4));for(uint j=0;j<4;j++)next[v][j]=fp8(codes[j])*scale;}
+                }
+            }
+        }
+        if(iteration){
+            threadgroup float* a=scratch+((iteration-1)&1)*(M+64)*16;threadgroup float* b=a+M*16;
+            for(uint k=0;k<16;k+=8)for(uint mi=0;mi<M/16;mi++){
+                simdgroup_float8x8 av;simdgroup_load(av,a+((sg/2)*8+mi*16)*16+k,16);
+                for(uint ni=0;ni<4;ni++){simdgroup_float8x8 bv;simdgroup_load(bv,b+((sg%2)*8+ni*16)*16+k,16,ulong2(0),true);simdgroup_multiply_accumulate(sum[mi][ni],av,bv,sum[mi][ni]);}
+            }
+        }
+        if(base<Cols && (!input || r<M)){threadgroup float* dst=scratch+(iteration&1)*(M+64)*16+(input?0:M*16)+r*16;for(uint v=0;v<4;v++)*((threadgroup float4*)(dst+4*v))=next[v];}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for(uint mi=0;mi<M/16;mi++)for(uint ni=0;ni<4;ni++)simdgroup_store(sum[mi][ni],scratch+((sg/2)*8+mi*16)*64+(sg%2)*8+ni*16,64);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint i=tid;i<M*64;i+=128){uint t=first+i/64;if(t<count){uint out=groups[expert*stride+1+t];y[out*2304+row+i%64]=scratch[i];}}
+}
+
 // Native dimensions and format are compile-time constants; the arithmetic and
 // adaptive 16/32/64-slot tiles match expert_matmul_prefill.
 template<uint Cols,uint Format,bool Down>
 void prefill_native_expert_tile(device float* y,device const uchar* w,device const uchar* scales,device const float* factors,device const float* x,device const uint* groups,device const uint* tiles,device const float* table,constant Params& p,uint group,uint tid,uint lane,threadgroup float* scratch){
     uint tile=group/36;if(tile>=tiles[0])return;
     uint expert=tiles[1+2*tile],first=tiles[2+2*tile],remaining=groups[expert*(p.u[5]+1)]-first;
-    if(remaining<=16)prefill_matrix_tile<16,64,32,true>(y,w,scales,factors,x,groups,tiles,table,2304,Cols,8,Format,Down,p.u[5],0,group,tid,lane,scratch);
-    else if(remaining<=32)prefill_matrix_tile<32,64,32,true>(y,w,scales,factors,x,groups,tiles,table,2304,Cols,8,Format,Down,p.u[5],0,group,tid,lane,scratch);
-    else prefill_expert_pipeline<64,64,16,true>(y,w,scales,factors,x,groups,tiles,table,2304,Cols,8,Format,Down,p.u[5],group,tid,scratch);
+    if(remaining<=16)prefill_native_expert_pipeline<16,Cols,Format,Down>(y,w,scales,x,groups,tiles,table,p.u[5],group,tid,scratch);
+    else if(remaining<=32)prefill_native_expert_pipeline<32,Cols,Format,Down>(y,w,scales,x,groups,tiles,table,p.u[5],group,tid,scratch);
+    else prefill_native_expert_pipeline<64,Cols,Format,Down>(y,w,scales,x,groups,tiles,table,p.u[5],group,tid,scratch);
 }
 #define NATIVE_EXPERT(NAME,COLS,FORMAT,DOWN) \
 kernel void NAME(device float* y [[buffer(0)]],device const uchar* w [[buffer(1)]],device const uchar* scales [[buffer(2)]],device const float* factors [[buffer(3)]],device const float* x [[buffer(4)]],device const uint* groups [[buffer(5)]],device const uint* tiles [[buffer(6)]],device const float* table [[buffer(7)]],constant Params& p [[buffer(15)]],uint group [[threadgroup_position_in_grid]],uint tid [[thread_index_in_threadgroup]],uint lane [[thread_index_in_simdgroup]]) { \
@@ -179,3 +223,44 @@ NATIVE_EXPERT(expert_prefill_nvfp4_down,1152,0,true)
 NATIVE_EXPERT(expert_prefill_mxfp8_up,2304,1,false)
 NATIVE_EXPERT(expert_prefill_mxfp8_down,1152,1,true)
 #undef NATIVE_EXPERT
+
+// 128-thread dense tiles for large BF16 projections. Columns must be a
+// multiple of 32; row/token tails and input offsets remain fully guarded.
+template<uint M>
+void dense_compact_tile(device float* y,device const uchar* w,device const float* x,constant Params& p,uint group,uint tid,threadgroup float* scratch){
+    uint rows=p.u[0],Cols=p.u[1],count=p.u[3],row_tiles=(rows+63)/64,row=(group%row_tiles)*64,first=(group/row_tiles)*M,sg=tid/32;
+    bool input=tid<64;uint r=tid%64;
+    bool valid=input?(r<M && first+r<count):row+r<rows;
+    uint idx=input?(first+r)*Cols+p.u[4]:(row+r)*Cols;
+    simdgroup_float8x8 sum[M/16][4];
+    for(uint mi=0;mi<M/16;mi++)for(uint ni=0;ni<4;ni++)sum[mi][ni]=make_filled_simdgroup_matrix<float,8,8>(0.f);
+    float4 next[4];
+    for(uint iteration=0;iteration<=Cols/16;iteration++){
+        uint base=iteration*16;
+        if(base<Cols){
+            for(uint v=0;v<4;v++)next[v]=0;
+            if(valid){
+                if(input){for(uint v=0;v<4;v++)next[v]=float4(*((device const packed_float4*)(x+idx+base+v*4)));}
+                else for(uint v=0;v<4;v++)next[v]=weight4(w,idx+base+v*4,p.u[2]);
+            }
+        }
+        if(iteration){
+            threadgroup float* a=scratch+((iteration-1)&1)*(M+64)*16;threadgroup float* b=a+M*16;
+            for(uint k=0;k<16;k+=8)for(uint mi=0;mi<M/16;mi++){
+                simdgroup_float8x8 av;simdgroup_load(av,a+((sg/2)*8+mi*16)*16+k,16);
+                for(uint ni=0;ni<4;ni++){simdgroup_float8x8 bv;simdgroup_load(bv,b+((sg%2)*8+ni*16)*16+k,16,ulong2(0),true);simdgroup_multiply_accumulate(sum[mi][ni],av,bv,sum[mi][ni]);}
+            }
+        }
+        if(base<Cols && (!input || r<M)){threadgroup float* dst=scratch+(iteration&1)*(M+64)*16+(input?0:M*16)+r*16;for(uint v=0;v<4;v++)*((threadgroup float4*)(dst+4*v))=next[v];}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for(uint mi=0;mi<M/16;mi++)for(uint ni=0;ni<4;ni++)simdgroup_store(sum[mi][ni],scratch+((sg/2)*8+mi*16)*64+(sg%2)*8+ni*16,64);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint i=tid;i<M*64;i+=128){uint t=first+i/64;if(t<count && row+i%64<rows)y[t*rows+row+i%64]=scratch[i];}
+}
+
+
+kernel void matmul_prefill_compact(device float* y [[buffer(0)]],device const uchar* w [[buffer(1)]],device const float* x [[buffer(2)]],constant Params& p [[buffer(15)]],uint group [[threadgroup_position_in_grid]],uint tid [[thread_index_in_threadgroup]]) {
+    threadgroup float scratch[4096];
+    dense_compact_tile<64>(y,w,x,p,group,tid,scratch);
+}
