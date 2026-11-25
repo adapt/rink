@@ -1,6 +1,9 @@
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
-use rink_inkling::KvCachePrecision;
+use rink_core::KvCachePrecision;
+#[cfg(target_os = "macos")]
+mod bonsai;
+mod models;
 use std::path::PathBuf;
 
 #[cfg(any(target_os = "macos", test))]
@@ -341,6 +344,26 @@ fn main() -> Result<()> {
             }
         }
         Command::Inspect { model } => {
+            if models::Kind::detect(&model)? == models::Kind::Bonsai {
+                let c = rink_bonsai::Config::load(model.join("config.json"))?;
+                let t = &c.text_config;
+                let full = (0..t.num_hidden_layers).filter(|&i| t.is_full(i)).count();
+                println!(
+                    "Bonsai 2.5: {} layers, {full} full attention, {} recurrent",
+                    t.num_hidden_layers,
+                    t.num_hidden_layers - full
+                );
+                println!(
+                    "Width {}, vocabulary {}, affine 2-bit/group-128 weights with signed Hadamard transforms",
+                    t.hidden_size, t.vocab_size
+                );
+                println!(
+                    "Model context limit {}; {:.2} GiB of caches at that limit",
+                    t.max_position_embeddings,
+                    t.cache_bytes(t.max_position_embeddings)? as f64 / (1u64 << 30) as f64
+                );
+                return Ok(());
+            }
             let c = rink_inkling::Config::load(model.join("config.json"))?;
             let t = &c.text_config;
             println!(
@@ -416,6 +439,10 @@ fn main() -> Result<()> {
             );
             #[cfg(target_os = "macos")]
             {
+                if models::Kind::detect(&model)? == models::Kind::Bonsai {
+                    bonsai::validate(kv_cache, prefill_batch)?;
+                    return bonsai::chat(&model, max_tokens, context, effort, show_thinking, tools);
+                }
                 chat::run(
                     model,
                     max_tokens,
@@ -465,6 +492,11 @@ fn generate(
     kv_cache: KvCachePrecision,
     prefill_batch: Option<usize>,
 ) -> Result<()> {
+    if models::Kind::detect(&directory)? == models::Kind::Bonsai {
+        bonsai::validate(kv_cache, prefill_batch)?;
+        ensure!(image.is_none(), "Bonsai image input is not implemented yet");
+        return bonsai::generate(&directory, &prompt, max_tokens, context, raw, effort);
+    }
     use anyhow::Context;
     use rink_core::{Accelerator, AutoregressiveModel};
     use std::{io::Write, time::Instant};

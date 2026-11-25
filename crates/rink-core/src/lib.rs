@@ -1,5 +1,9 @@
 //! Hardware-independent buffer, kernel and autoregressive model contracts.
 //! Model crates own their kernels; accelerator crates own compilation and execution.
+pub mod checkpoint;
+mod kv_cache;
+pub use kv_cache::KvCachePrecision;
+
 pub use anyhow::{Error, Result, bail, ensure};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

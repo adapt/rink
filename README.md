@@ -1,10 +1,15 @@
 # rink
 
-rink runs [Inkling 2 Mini](https://thinkingmachines.ai/news/inkling-2-mini/)
-locally on Apple silicon.
+rink runs models locally on Apple silicon. It started with
+[Inkling 2 Mini](https://thinkingmachines.ai/news/inkling-2-mini/).
+Each model has its own Rust crate, configuration, and Metal kernels.
 
-The current version supports text and image input with Inkling 2 Mini on Metal.
-Support for CUDA and other models is planned.
+| Model | Input | Tools |
+| --- | --- | --- |
+| Inkling 2 Mini | Text and images | Bash and file reading |
+| [Bonsai 2.5 27B](https://prismml.com/news/bonsai-2-5-27b) | Text | Not yet supported |
+
+Both models use Metal. CUDA support is planned.
 
 ## Requirements
 
@@ -18,7 +23,7 @@ For a 32 GB Mac, use the smaller context below.
 
 ## Run
 
-Download the original model files:
+Download the original Inkling model files:
 
 ```sh
 hf download thinkingmachines/Inkling-2-Mini \
@@ -39,6 +44,20 @@ For a 32 GB Mac, start with a smaller context and reply limit:
 cargo run --release -- chat --context 4096 --max-tokens 1024
 ```
 
+To use Bonsai 2.5, download its MLX pack and select its directory:
+
+```sh
+hf download prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit \
+  --revision aa432fd0e17612f6684e728d4d3c42b6656bcabb \
+  --local-dir checkpoints/bonsai-2.5-27b \
+  --include config.json tokenizer.json model.safetensors
+cargo run --release -- chat --model checkpoints/bonsai-2.5-27b
+```
+
+The Bonsai download needs 8.6 GB of disk space. rink reads its packed weights
+directly. Python and MLX are not needed to run it. See the
+[Bonsai notes](models/bonsai/README.md) for supported features and validation.
+
 ## Chat
 
 Enter one message per line. Replies appear as the model generates them.
@@ -55,7 +74,7 @@ Enter one message per line. Replies appear as the model generates them.
 Chat uses a 262,144-token context, a 16,384-token reply limit, and effort `0.9` by default.
 The reply limit includes reasoning tokens. The context limit covers the full conversation.
 The KV cache uses FP16. Conversation history stays in memory until reset or exit.
-Prefill uses batches of up to 1,024 tokens. This targets about 30 GiB of Metal
+Inkling prefill uses batches of up to 1,024 tokens. This targets about 30 GiB of Metal
 memory at 256K context. Use `--prefill-batch 128` to reduce memory use. See the
 [performance measurements](benchmarks/prefill-30g.md).
 
@@ -68,10 +87,12 @@ Progress goes to stderr. Use `--show-thinking` to read the reasoning text.
 
 Use `cargo run --release -- chat --help` to see all options.
 
-The model configuration allows up to 1,048,576 tokens. This context does not fit
+The Inkling configuration allows up to 1,048,576 tokens. This context does not fit
 in 48 GB of unified memory.
 
 ## Tools
+
+Tools are currently available with Inkling only.
 
 Enable file reading and Bash:
 

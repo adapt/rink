@@ -1,6 +1,7 @@
+use crate::models::loaded::Model;
 use anyhow::Result;
+use rink_core::KvCachePrecision;
 use rink_core::{AutoregressiveModel, greedy};
-use rink_inkling::{Inkling, KvCachePrecision, PrefillProgress};
 use rink_metal::Metal;
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Instant};
@@ -116,10 +117,7 @@ pub fn run(options: Options) -> Result<()> {
         );
     }
     let start = Instant::now();
-    let mut model = Inkling::load_with_kv_cache(device, &directory, context, kv_cache)?;
-    if let Some(limit) = prefill_batch {
-        model.set_prefill_batch_limit(limit)?;
-    }
+    let mut model = Model::load(device, &directory, context, kv_cache, prefill_batch)?;
     let load_seconds = start.elapsed().as_secs_f64();
     let load = phase(load_seconds, 0, model.accelerator());
     // Warm the GPU and runtime separately from measured trials. Each trial starts
@@ -168,13 +166,7 @@ pub fn run(options: Options) -> Result<()> {
             } else {
                 // These callbacks follow existing GPU synchronization points;
                 // recording windows does not split batches or project extra logits.
-                model.prefill_greedy_with_progress(&prompt, |event| match event {
-                    PrefillProgress::Prompt {
-                        completed_tokens, ..
-                    } => progress(completed_tokens),
-                    PrefillProgress::Complete => progress(length),
-                    _ => {}
-                })?
+                model.prefill_progress(&prompt, progress)?
             };
             let prefill = phase(start.elapsed().as_secs_f64(), length, model.accelerator());
             model.accelerator_mut().reset_stats();

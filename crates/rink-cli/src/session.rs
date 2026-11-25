@@ -11,15 +11,19 @@ enum State {
 
 pub struct Session<M> {
     model: M,
-    eos: u32,
+    eos: Vec<u32>,
     state: State,
 }
 
 impl<M: AutoregressiveModel> Session<M> {
     pub fn new(model: M, eos: u32) -> Self {
+        Self::with_eos(model, &[eos])
+    }
+
+    pub fn with_eos(model: M, eos: &[u32]) -> Self {
         Self {
             model,
-            eos,
+            eos: eos.to_vec(),
             state: State::Ready,
         }
     }
@@ -123,7 +127,7 @@ impl<M: AutoregressiveModel> Session<M> {
         };
         self.state = State::Failed;
         let next = self.model.step_greedy(token)?;
-        if token == self.eos {
+        if self.eos.contains(&token) {
             self.state = State::Ready;
             Ok(None)
         } else {
@@ -182,6 +186,25 @@ mod tests {
             },
             0,
         )
+    }
+
+    #[test]
+    fn multiple_stop_tokens_are_cached_once_before_the_next_turn() {
+        let mut s = Session::with_eos(
+            Model {
+                tokens: vec![],
+                capacity: 16,
+                fail_at: None,
+            },
+            &[0, 3],
+        );
+        s.start(&[1], 3).unwrap();
+        assert_eq!(s.next_token().unwrap(), Some(2));
+        assert_eq!(s.next_token().unwrap(), None);
+        assert_eq!(s.model.tokens, [1, 2, 3]);
+        s.start(&[3], 1).unwrap();
+        assert_eq!(s.next_token().unwrap(), None);
+        assert_eq!(s.model.tokens, [1, 2, 3, 3, 0]);
     }
 
     #[test]

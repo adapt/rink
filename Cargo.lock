@@ -865,11 +865,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
+name = "rink-bonsai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "half",
+ "rink-core",
+ "rink-metal",
+ "safetensors",
+ "serde",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
 name = "rink-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "rink-bonsai",
  "rink-core",
  "rink-inkling",
  "rink-metal",
@@ -883,6 +899,10 @@ name = "rink-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "memmap2",
+ "safetensors",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -893,7 +913,6 @@ dependencies = [
  "bytemuck",
  "half",
  "image",
- "memmap2",
  "rink-core",
  "rink-metal",
  "safetensors",

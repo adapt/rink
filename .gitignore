@@ -4,4 +4,5 @@
 !models/inkling/tests/fixtures/tiny/model.safetensors
 !models/inkling/tests/fixtures/vision/model.safetensors
 !models/inkling/tests/fixtures/vision/expected.safetensors
+!models/bonsai/tests/fixtures/tiny/model.safetensors
 .DS_Store

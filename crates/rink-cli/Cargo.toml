@@ -13,6 +13,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 rink-core.workspace = true
+rink-bonsai.workspace = true
 rink-inkling.workspace = true
 rink-tools.workspace = true
 serde_json.workspace = true

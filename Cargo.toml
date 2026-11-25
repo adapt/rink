@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/rink-core", "crates/rink-metal", "crates/rink-tools", "models/inkling", "crates/rink-cli"]
+members = ["crates/rink-core", "crates/rink-metal", "crates/rink-tools", "models/inkling", "models/bonsai", "crates/rink-cli"]
 resolver = "2"
 
 [workspace.package]
@@ -25,6 +25,7 @@ tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 tempfile = "3"
 rink-core = { path = "crates/rink-core" }
 rink-metal = { path = "crates/rink-metal" }
+rink-bonsai = { path = "models/bonsai" }
 rink-inkling = { path = "models/inkling" }
 rink-tools = { path = "crates/rink-tools" }
 

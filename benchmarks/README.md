@@ -1,5 +1,8 @@
 # Metal inference benchmarks
 
+See the [Bonsai 2.5 baseline](bonsai.md) for the second model's throughput,
+memory use, and comparison with the published MLX runtime.
+
 See the [correctness audit](correctness.md) for numerical references and native
 CLI checks, including images and tools.
 
