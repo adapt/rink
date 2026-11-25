@@ -6,7 +6,7 @@ It owns the model configuration, weight layout, chat format, forward pass, and
 Metal kernels. It uses the shared `rink-core` accelerator and checkpoint APIs.
 It has no dependency on the Inkling crate or on a Python runtime.
 
-See the [M4 Max baseline](../../benchmarks/bonsai.md) for measured throughput,
+See the [M4 Max measurements](../../benchmarks/bonsai.md) for measured throughput,
 memory use, and native checkpoint comparisons.
 
 ## Run
@@ -34,7 +34,7 @@ This version supports text input. Images, tool calls, MTP, and batched prefill
 are not implemented for Bonsai. Inkling still supports its existing features.
 Bonsai rejects `--image`, `--tool`, `--kv-cache f32`, and `--prefill-batch`.
 Its prefill processes one token at a time and skips intermediate vocabulary
-projections. This is a correctness baseline, not a tuned prefill implementation.
+projections. Batched prefill is the main remaining performance task.
 
 ## Storage and arithmetic
 

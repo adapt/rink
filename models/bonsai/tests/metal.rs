@@ -110,8 +110,14 @@ fn packed_projection_and_inverse_embedding_match_scalar_reference() {
     }
     let mut device = rink_metal::Metal::new().unwrap();
     let kernels = Kernels::compile(&mut device).unwrap();
-    for (width, block) in [(128, 128), (5120, 1024), (8192, 4096), (17408, 1024)] {
-        let rows = 5;
+    for (rows, width, block) in [
+        (1, 128, 128),
+        (5, 384, 128),
+        (17, 5120, 1024),
+        (5, 8192, 4096),
+        (5, 17408, 1024),
+    ] {
+        let embedding_row = (rows - 1).min(3);
         let x: Vec<f32> = (0..width)
             .map(|i| f16::from_f32((i % 29) as f32 / 16.0 - 0.75).to_f32())
             .collect();
@@ -123,16 +129,24 @@ fn packed_projection_and_inverse_embedding_match_scalar_reference() {
             words[i / 16] |= (((i % 7) % 4) as u32) << (2 * (i % 16));
         }
         let scales: Vec<f32> = (0..rows * width / 128)
-            .map(|i| f16::from_f32((i % 11 + 1) as f32 / 256.0).to_f32())
+            .map(|i| f16::from_f32((i % 11 + 1) as f32 / 257.0).to_f32())
             .collect();
-        let biases: Vec<f32> = scales.iter().map(|&s| -s).collect();
+        // Exercise all four codes and independently rounded affine biases, not
+        // just the symmetric ternary subset used by the native checkpoint.
+        let biases: Vec<f32> = scales
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| f16::from_f32(-0.73 * s + (i % 3) as f32 / 997.0).to_f32())
+            .collect();
         let xb = device.upload(bytemuck::cast_slice(&bits(&x))).unwrap();
         let sb = device.upload(bytemuck::cast_slice(&bits(&signs))).unwrap();
         let w = device.upload(bytemuck::cast_slice(&words)).unwrap();
         let scalesb = device.upload(bytemuck::cast_slice(&bits(&scales))).unwrap();
         let biasesb = device.upload(bytemuck::cast_slice(&bits(&biases))).unwrap();
         let rotated = device.allocate(width * 2).unwrap();
-        let projected = device.allocate(rows * 2).unwrap();
+        let projected = device
+            .upload(bytemuck::cast_slice(&vec![0x7e00u16; rows + 64]))
+            .unwrap();
         let embedding = device.allocate(width * 2).unwrap();
         let inverse = device.allocate(width * 2).unwrap();
         // SAFETY: all shapes, packed extents and block counts match the shader ABI.
@@ -162,7 +176,7 @@ fn packed_projection_and_inverse_embedding_match_scalar_reference() {
                     &mut device,
                     "embedding",
                     &[&w, &scalesb, &biasesb, &embedding],
-                    Params::new(&[width, 3], &[]),
+                    Params::new(&[width, embedding_row], &[]),
                     width,
                     256,
                 )
@@ -188,7 +202,13 @@ fn packed_projection_and_inverse_embedding_match_scalar_reference() {
             )
             .to_f32()
         };
-        for (row, actual) in read(&mut device, &projected).into_iter().enumerate() {
+        let output = device.read(&projected).unwrap();
+        assert!(output[rows * 2..].chunks_exact(2).all(|b| b == [0, 0x7e]));
+        for (row, actual) in read(&mut device, &projected)
+            .into_iter()
+            .take(rows)
+            .enumerate()
+        {
             let expected = f16::from_f64(
                 (0..width)
                     .map(|i| weight(row * width + i) as f64 * transformed[i] as f64)
@@ -200,7 +220,9 @@ fn packed_projection_and_inverse_embedding_match_scalar_reference() {
                 "width {width} row {row}: {actual} vs {expected}"
             );
         }
-        let embedded: Vec<f32> = (0..width).map(|i| weight(3 * width + i)).collect();
+        let embedded: Vec<f32> = (0..width)
+            .map(|i| weight(embedding_row * width + i))
+            .collect();
         for (actual, expected) in read(&mut device, &inverse)
             .iter()
             .zip(transform(&embedded, &signs, block, true))

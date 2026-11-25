@@ -31,15 +31,25 @@ kernel void hadamard(device const half *x [[buffer(0)]], device const half *sign
     for(uint i=tid;i<n;i+=256) out[base+i]=half(v[i]*scale*(inverse?float(sign[base+i]):1.0f));
 }
 
+// Width is divisible by 128. Each SIMD group owns one output row.
 kernel void packed_mv(device const uint *w [[buffer(0)]], device const half *s [[buffer(1)]],
     device const half *b [[buffer(2)]], device const half *x [[buffer(3)]], device half *out [[buffer(4)]],
     constant Params &p [[buffer(15)]], uint gid [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     uint row=gid/32, width=p.u[0]; if(row>=p.u[1])return;
     float sum=0.0f;
-    for(uint col=lane;col<width;col+=32) {
-        uint j=row*width+col, code=(w[j/16]>>(2*(j%16)))&3;
-        float weight=float(half(float(code)*float(s[j/128])+float(b[j/128])));
-        sum+=weight*float(x[col]);
+    // A lane consumes a complete packed word. The word and affine parameters
+    // are loaded once for sixteen coefficients, instead of once per coefficient.
+    // Vector loads cover four inputs at a time. Preserve the released FP16
+    // dequantization boundary and FP32 accumulation; no expanded weight buffer.
+    for(uint word=lane;word<width/16;word+=32) {
+        uint j=row*(width/16)+word, codes=w[j];
+        float scale=float(s[j/8]),bias=float(b[j/8]);
+        #pragma unroll
+        for(uint i=0;i<16;i+=4) {
+            float4 weights=float4(half4(float4((uint4(codes) >> (uint4(0,2,4,6)+2*i))&3)*scale+bias));
+            float4 inputs=float4(*((device const half4*)(x+word*16+i)));
+            sum+=dot(weights,inputs);
+        }
     }
     sum=simd_sum(sum);if(lane==0)out[row]=half(sum);
 }
