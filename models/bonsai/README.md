@@ -30,9 +30,17 @@ resumes a reply. `/reset` clears both caches. Both native end tokens stop replie
 The default effort `0.9` selects `xhigh` reasoning. Effort `0` disables reasoning;
 values below `1/3` select `low`, and values from `1/3` to below `2/3` select `medium`.
 
-This version supports text input and batched prefill. Images, tool calls, and MTP
-are not implemented for Bonsai. Inkling still supports its existing features.
-Bonsai rejects `--image`, `--tool`, and `--kv-cache f32`.
+This version supports text input, batched prefill, and the `bash` and `read` tools.
+Enable tools with `--tool bash,read --cwd /path/to/project`. Commands run directly
+with your user permissions. Tool timeouts, output limits, cancellation, and
+`/continue` use the same rules as Inkling. Calls execute after a complete assistant
+response; a pause inside a call does not execute it. Tool replies extend the cached
+conversation without replaying earlier calls.
+
+Bonsai uses its native XML-style calls and groups tool results in a user message.
+The next assistant response uses the selected reasoning effort. `read` supports
+text files; an image returns an unsupported-input error. Images and MTP are not
+implemented. Bonsai rejects `--image` and `--kv-cache f32`.
 
 Prefill processes up to 512 tokens per batch by default. `--prefill-batch` selects
 a power of two from 32 through 4,096. The workspace is allocated once. Larger
@@ -83,7 +91,17 @@ cargo test -p rink-bonsai -- --include-ignored --test-threads=1
 
 The native chat test also needs the downloaded tokenizer. Its 12 expected token
 sequences were produced by the released Jinja template and tokenizer, covering
-all four effort modes, Unicode, and multiline text.
+all four effort modes, Unicode, and multiline text. Tool fixtures check declarations,
+multiple calls, typed arguments, and grouped results in all four effort modes.
+Parser tests cover malformed calls, pauses, and literal delimiters in input.
+The CLI tests check execution once, context limits, reset, and cached continuation.
+
+Run native tool checks with `python3 scripts/check_bonsai_cli.py` after a release
+build. The check uses synthetic files in a temporary directory and includes Bash,
+file reading, missing files, unsupported images, and Ctrl-C cancellation.
+Regenerate chat fixtures with `python scripts/bonsai_chat_reference.py checkpoints/bonsai-2.5-27b`
+in a Python environment with Transformers installed. This generator also needs
+the release's `chat_template.jinja` and `tokenizer_config.json` in that directory.
 
 To regenerate the numerical fixture, install the release's
 `runtime/requirements.txt` in a temporary Python environment. Download the release's

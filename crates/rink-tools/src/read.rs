@@ -20,6 +20,7 @@ pub struct Read {
     home: Option<PathBuf>,
     output_bytes: usize,
     timeout: Duration,
+    images: bool,
 }
 
 #[derive(Deserialize)]
@@ -47,7 +48,14 @@ impl Read {
             home: std::env::var_os("HOME").map(PathBuf::from),
             output_bytes,
             timeout,
+            images: true,
         })
+    }
+
+    /// Match the active model's input capabilities before creating snapshots.
+    pub fn with_images(mut self, enabled: bool) -> Self {
+        self.images = enabled;
+        self
     }
 
     fn path(&self, path: &str) -> Result<PathBuf> {
@@ -104,6 +112,7 @@ impl Read {
         let image =
             signature.starts_with(b"\x89PNG\r\n\x1a\n") || signature.starts_with(b"\xff\xd8\xff");
         if image {
+            ensure!(self.images, "this model does not support image input");
             ensure!(
                 args.start_line.is_none() && args.max_lines.is_none(),
                 "line ranges apply to text files, not images"
@@ -190,14 +199,27 @@ impl Tool for Read {
     }
 
     fn definition(&self) -> Value {
+        let description = if self.images {
+            format!(
+                "Read a local UTF-8 text file or view a PNG/JPEG image with direct host access. Relative paths use {}; ~/ expands to your home directory. Images are placed directly in your visual context. For text, start_line is 1-based and max_lines defaults to 200; at most {} text bytes are returned. Output has line numbers and continuation information. Line ranges do not apply to images. Directories, PDFs and other binary formats are unsupported.",
+                self.cwd.display(),
+                self.output_bytes
+            )
+        } else {
+            format!(
+                "Read a local UTF-8 text file with direct host access. Relative paths use {}; ~/ expands to your home directory. start_line is 1-based and max_lines defaults to 200; at most {} text bytes are returned. Output has line numbers and continuation information. Images, directories, PDFs and other binary formats are unsupported.",
+                self.cwd.display(),
+                self.output_bytes
+            )
+        };
         json!({
             "name":"read", "type":"function",
-            "description":format!("Read a local UTF-8 text file or view a PNG/JPEG image with direct host access. Relative paths use {}; ~/ expands to your home directory. Images are placed directly in your visual context. For text, start_line is 1-based and max_lines defaults to 200; at most {} text bytes are returned. Output has line numbers and continuation information. Line ranges do not apply to images. Directories, PDFs and other binary formats are unsupported.", self.cwd.display(), self.output_bytes),
+            "description":description,
             "parameters":{
                 "type":"object", "properties":{
                     "path":{"type":"string", "description":"Local file path, absolute or relative to the tool working directory."},
-                    "start_line":{"type":"integer", "minimum":1, "description":"First text line to read (1-based). Omit for images."},
-                    "max_lines":{"type":"integer", "minimum":1, "maximum":MAX_LINES, "description":"Maximum text lines, default 200. Omit for images."}
+                    "start_line":{"type":"integer", "minimum":1, "description":if self.images {"First text line to read (1-based). Omit for images."} else {"First text line to read (1-based)."}},
+                    "max_lines":{"type":"integer", "minimum":1, "maximum":MAX_LINES, "description":if self.images {"Maximum text lines, default 200. Omit for images."} else {"Maximum text lines, default 200."}}
                 }, "required":["path"], "additionalProperties":false
             }
         })

@@ -2,6 +2,8 @@
 //! The released chat template defines tool declarations, named invocations and
 //! tool replies: https://huggingface.co/thinkingmachines/Inkling-2-Mini/blob/main/chat_template.jinja
 use anyhow::{Context, Result, bail, ensure};
+pub use rink_core::chat::Invocation;
+use rink_core::chat::ToolCodec;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -217,11 +219,13 @@ pub enum Event {
     Token(Channel, u32),
 }
 
-#[derive(Debug)]
-pub struct Invocation {
-    pub name: String,
-    /// Invalid payloads become tool errors; they must never reach an executor.
-    pub arguments: std::result::Result<Value, String>,
+impl ToolCodec for Codec {
+    fn tool_result(&self, name: &str, content: &str) -> Result<Vec<u32>> {
+        Codec::tool_result(self, name, content)
+    }
+    fn tool_image(&self, name: &str, image_tokens: usize) -> Result<Vec<u32>> {
+        Codec::tool_image(self, name, image_tokens)
+    }
 }
 
 enum State {

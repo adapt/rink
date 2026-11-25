@@ -10,6 +10,9 @@ use std::path::PathBuf;
 mod agent;
 #[cfg(target_os = "macos")]
 mod bench;
+#[cfg(test)]
+#[path = "../../../models/bonsai/tests/support/chat.rs"]
+mod bonsai_chat_fixture;
 #[cfg(target_os = "macos")]
 mod chat;
 #[cfg(test)]

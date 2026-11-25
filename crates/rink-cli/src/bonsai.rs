@@ -1,7 +1,14 @@
 //! Bonsai's text UI uses the shared conversation session and its own chat codec.
-use crate::{ToolOptions, session::Session};
+use crate::{
+    ToolOptions,
+    agent::{ToolLoop, display_tool},
+    session::Session,
+};
 use anyhow::{Context, Result, ensure};
-use rink_bonsai::{Bonsai, chat::Codec};
+use rink_bonsai::{
+    Bonsai,
+    chat::{Channel, Codec, Event},
+};
 use rink_core::{Accelerator, AutoregressiveModel, KvCachePrecision};
 use rink_metal::Metal;
 use std::{
@@ -149,10 +156,9 @@ pub fn chat(
     tools: ToolOptions,
     batch: Option<usize>,
 ) -> Result<()> {
-    ensure!(
-        tools.tool.is_empty(),
-        "Bonsai tool-call parsing is not implemented; --tool is currently supported by Inkling"
-    );
+    let registry = crate::agent::registry(&tools, false)?;
+    let definitions = registry.definitions();
+    let mut tool_loop = ToolLoop::new(registry, tools.max_tool_rounds as usize, false);
     let codec = codec(directory)?;
     let mut session = Session::with_eos(load(directory, context, batch)?, &codec.eos());
     let mut input = std::io::stdin().lock();
@@ -180,7 +186,12 @@ pub fn chat(
         "Context: {context} tokens; reply limit: {max_tokens}; reasoning: {effort_name}; KV cache: f16."
     )?;
     let mut stream = codec.tokenizer().decode_stream(true);
-    let mut thinking = effort > 0.0;
+    let mut channel = if effort > 0.0 {
+        Channel::Thinking
+    } else {
+        Channel::Text
+    };
+    let mut parser = codec.parser(effort, &definitions);
     let mut failed = false;
     loop {
         write!(output, "\nYou: ")?;
@@ -204,6 +215,8 @@ pub fn chat(
             "/reset" => {
                 session.reset()?;
                 failed = false;
+                tool_loop.reset();
+                parser = codec.parser(effort, &definitions);
                 stream = codec.tokenizer().decode_stream(true);
                 writeln!(output, "Conversation cleared. The model is still loaded.")?;
                 continue;
@@ -230,63 +243,157 @@ pub fn chat(
                     )?;
                     continue;
                 }
-                let tokens = codec.user_turn(message, session.position() == 0, effort)?;
+                let tokens = codec.user_turn_with_tools(
+                    message,
+                    session.position() == 0,
+                    effort,
+                    &definitions,
+                )?;
                 if let Err(e) = session.check_prompt(&tokens, max_tokens) {
                     writeln!(output, "{e}")?;
                     continue;
                 }
                 session.start_with(&tokens, max_tokens, prefill)?;
                 stream = codec.tokenizer().decode_stream(true);
-                thinking = effort > 0.0;
+                channel = if effort > 0.0 {
+                    Channel::Thinking
+                } else {
+                    Channel::Text
+                };
+                parser = codec.parser(effort, &definitions);
+                tool_loop.reset();
             }
         }
-        let start = Instant::now();
-        let before = session.position();
-        let mut label = true;
-        if thinking && !show_thinking {
-            eprintln!("Thinking…");
-        }
-        for _ in 0..session.reply_budget(max_tokens)? {
-            let token = match session.next_token() {
-                Ok(Some(t)) => t,
-                Ok(None) => break,
+        let mut remaining = max_tokens;
+        let mut tool_pause = false;
+        while remaining > 0 {
+            let start = Instant::now();
+            let before = session.position();
+            let mut label = true;
+            let mut complete = false;
+            if channel == Channel::Thinking && !show_thinking {
+                eprintln!("Thinking…");
+            }
+            for _ in 0..session.reply_budget(remaining)? {
+                let token = match session.next_token() {
+                    Ok(Some(t)) => t,
+                    Ok(None) => {
+                        complete = true;
+                        break;
+                    }
+                    Err(e) => {
+                        writeln!(output, "\nGeneration failed: {e:#}. Use /reset.")?;
+                        failed = true;
+                        break;
+                    }
+                };
+                let event = match parser.push(token, codec.tokenizer()) {
+                    Ok(event) => event,
+                    Err(e) => {
+                        writeln!(output, "\nInvalid model response: {e:#}. Use /reset.")?;
+                        failed = true;
+                        break;
+                    }
+                };
+                match event {
+                    Event::Boundary(next) => {
+                        let entering_tool = next == Channel::Tool && channel != Channel::Tool;
+                        channel = next;
+                        stream = codec.tokenizer().decode_stream(true);
+                        label = true;
+                        if entering_tool {
+                            eprintln!("Preparing tool call…");
+                        }
+                    }
+                    Event::Token(kind, token)
+                        if kind == Channel::Text
+                            || (show_thinking && kind == Channel::Thinking) =>
+                    {
+                        if let Some(text) = stream.step(token).map_err(anyhow::Error::msg)? {
+                            if label {
+                                write!(
+                                    output,
+                                    "\n{}: ",
+                                    if kind == Channel::Thinking {
+                                        "Thinking"
+                                    } else {
+                                        "Assistant"
+                                    }
+                                )?;
+                                label = false;
+                            }
+                            write!(output, "{text}")?;
+                            output.flush()?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            writeln!(output)?;
+            let n = session.position() - before;
+            remaining = remaining.saturating_sub(n);
+            let seconds = start.elapsed().as_secs_f64();
+            eprintln!(
+                "Generation: {n} tokens in {seconds:.2}s ({:.1} tok/s); context {}/{context}",
+                n as f64 / seconds,
+                session.position()
+            );
+            if failed || !complete {
+                break;
+            }
+            let calls = match parser.finish(codec.tokenizer()) {
+                Ok(calls) => calls,
                 Err(e) => {
-                    writeln!(output, "\nGeneration failed: {e:#}. Use /reset.")?;
+                    writeln!(output, "Invalid model response: {e:#}. Use /reset.")?;
                     failed = true;
                     break;
                 }
             };
-            if token == codec.thinking_start() || token == codec.thinking_end() {
-                thinking = token == codec.thinking_start();
-                stream = codec.tokenizer().decode_stream(true);
-                label = true;
-                continue;
+            if calls.is_empty() {
+                break;
             }
-            if (show_thinking || !thinking)
-                && let Some(text) = stream.step(token).map_err(anyhow::Error::msg)?
-            {
-                if label {
-                    write!(
-                        output,
-                        "\n{}: ",
-                        if thinking { "Thinking" } else { "Assistant" }
-                    )?;
-                    label = false;
+            let interrupt = rink_tools::Interrupt::install()?;
+            let result = tool_loop.run(
+                &codec.tool_codec(effort),
+                calls,
+                session.remaining_capacity().saturating_sub(1),
+                interrupt.flag(),
+                |event| display_tool(&mut output, event),
+            );
+            drop(interrupt);
+            let result = match result {
+                Ok(result) => result,
+                Err(e) => {
+                    writeln!(output, "Cannot continue tool round: {e:#}. Use /reset.")?;
+                    failed = true;
+                    break;
                 }
-                write!(output, "{text}")?;
-                output.flush()?;
+            };
+            let pause = result.pause;
+            session.start_append(result.token_budget(), 1, |model| {
+                result.prefill(|tokens, image| {
+                    ensure!(image.is_none(), "Bonsai does not support image input");
+                    prefill(model, tokens)
+                })
+            })?;
+            parser = codec.parser(effort, &definitions);
+            stream = codec.tokenizer().decode_stream(true);
+            channel = if effort > 0.0 {
+                Channel::Thinking
+            } else {
+                Channel::Text
+            };
+            if let Some(reason) = pause {
+                writeln!(output, "[{reason}]")?;
+                tool_pause = true;
+                break;
             }
         }
-        writeln!(output)?;
-        let n = session.position() - before;
-        let seconds = start.elapsed().as_secs_f64();
-        eprintln!(
-            "Generation: {n} tokens in {seconds:.2}s ({:.1} tok/s); context {}/{context}",
-            n as f64 / seconds,
-            session.position()
-        );
-        if !failed && session.pending() {
-            writeln!(output, "[Reply paused; use /continue or /reset.]")?;
+        if !failed && session.pending() && !tool_pause {
+            writeln!(
+                output,
+                "[Reply paused at the token limit; use /continue or /reset.]"
+            )?;
         }
     }
     Ok(())

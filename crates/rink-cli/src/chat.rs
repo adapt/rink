@@ -1,6 +1,6 @@
 use crate::{
     ToolOptions,
-    agent::{ToolEvent, ToolLoop},
+    agent::{ToolLoop, display_tool},
     progress::{PrefillDisplay, StatusLine, rate},
     session::Session,
 };
@@ -46,37 +46,11 @@ pub fn run(
         .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
     let codec = Codec::new(tokenizer)?;
     let eos_token = codec.eos();
-    let mut registry = rink_tools::Registry::default();
-    if !tools.tool.is_empty() {
-        let cwd = tools
-            .cwd
-            .unwrap_or(std::env::current_dir()?)
-            .canonicalize()?;
-        let timeout = std::time::Duration::from_millis(tools.tool_timeout_ms);
-        if tools.tool.iter().any(|name| name == "bash") {
-            registry.register(rink_tools::Bash::new(
-                &cwd,
-                timeout,
-                tools.tool_output_bytes as usize,
-            )?)?;
-        }
-        if tools.tool.iter().any(|name| name == "read") {
-            registry.register(rink_tools::Read::new(
-                &cwd,
-                timeout,
-                tools.tool_output_bytes as usize,
-            )?)?;
-        }
-        eprintln!(
-            "Tools {} enabled with direct host access in {}. Ctrl-C cancels a running tool.",
-            tools.tool.join(", "),
-            cwd.display()
-        );
-    }
-    let definitions = registry.definitions();
     let config = rink_inkling::Config::load(directory.join("config.json"))?;
     let images_supported =
         config.vision_config.is_some() && codec.image_token() == config.image_token_id;
+    let registry = crate::agent::registry(&tools, images_supported)?;
+    let definitions = registry.definitions();
     let mut tool_loop = ToolLoop::new(registry, tools.max_tool_rounds as usize, images_supported);
     anyhow::ensure!(
         config.eos_token_id == eos_token,
@@ -382,75 +356,5 @@ pub fn run(
         }
         output.flush()?;
     }
-    Ok(())
-}
-
-fn terminal_text(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for c in text.chars() {
-        if c.is_control() && c != '\n' && c != '\t' {
-            escaped.extend(c.escape_default());
-        } else {
-            escaped.push(c);
-        }
-    }
-    escaped
-}
-
-fn display_tool(output: &mut impl Write, event: ToolEvent<'_>) -> Result<()> {
-    match event {
-        ToolEvent::Starting(call) => {
-            let arguments = match &call.arguments {
-                Ok(args) => args
-                    .get("command")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| args.to_string()),
-                Err(_) => "[invalid arguments]".into(),
-            };
-            writeln!(
-                output,
-                "\nTool {}: {}",
-                call.name,
-                terminal_text(&arguments)
-            )?;
-        }
-        ToolEvent::Notice(text) => writeln!(output, "{}", terminal_text(text))?,
-        ToolEvent::Finished(name, result) => {
-            for part in &result.content {
-                let text = match part {
-                    rink_tools::ContentPart::Text(text) => text,
-                    rink_tools::ContentPart::Image(image) => {
-                        writeln!(
-                            output,
-                            "[Image queued: {}]",
-                            terminal_text(&image.path.to_string_lossy())
-                        )?;
-                        continue;
-                    }
-                };
-                let value: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
-                if name == "bash" && value.get("stdout").is_some() {
-                    for key in ["stdout", "stderr"] {
-                        if let Some(text) = value[key].as_str().filter(|s| !s.is_empty()) {
-                            writeln!(output, "{}", terminal_text(text))?;
-                        }
-                    }
-                    writeln!(
-                        output,
-                        "[bash: exit {}; signal {}; timeout {}; cancelled {}; output truncated {}]",
-                        value["exit_code"],
-                        value["signal"],
-                        value["timed_out"],
-                        value["cancelled"],
-                        value["stdout_truncated"] == true || value["stderr_truncated"] == true
-                    )?;
-                } else {
-                    writeln!(output, "{}", terminal_text(text))?;
-                }
-            }
-        }
-    }
-    output.flush()?;
     Ok(())
 }

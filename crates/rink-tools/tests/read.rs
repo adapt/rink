@@ -148,3 +148,29 @@ fn rejects_a_fifo_without_waiting_for_a_writer_and_follows_regular_file_symlinks
     symlink("target", dir.path().join("link")).unwrap();
     assert!(text(&tool, json!({"path":"link"})).contains("linked text"));
 }
+
+#[test]
+fn text_only_models_reject_images_and_advertise_only_text_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    // Only a signature is needed: rejection precedes image validation/snapshotting.
+    std::fs::write(dir.path().join("image.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    std::fs::write(dir.path().join("image.jpg"), b"\xff\xd8\xff").unwrap();
+    std::fs::write(dir.path().join("text"), "still readable").unwrap();
+    let tool = Read::new(dir.path(), Duration::from_secs(2), 4096)
+        .unwrap()
+        .with_images(false);
+    for path in ["image.png", "image.jpg"] {
+        let error = tool
+            .execute(&json!({"path":path}), &AtomicBool::new(false))
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("does not support image input"));
+    }
+    assert!(text(&tool, json!({"path":"text"})).contains("1: still readable"));
+    let definition = tool.definition();
+    let description = definition["description"].as_str().unwrap();
+    assert!(
+        description.contains("Images, directories, PDFs and other binary formats are unsupported")
+    );
+    assert!(!description.contains("visual context"));
+}

@@ -7,7 +7,7 @@ Each model has its own Rust crate, configuration, and Metal kernels.
 | Model | Input | Tools |
 | --- | --- | --- |
 | Inkling 2 Mini | Text and images | Bash and file reading |
-| [Bonsai 2.5 27B](https://prismml.com/news/bonsai-2-5-27b) | Text | Not yet supported |
+| [Bonsai 2.5 27B](https://prismml.com/news/bonsai-2-5-27b) | Text | Bash and file reading |
 
 Both models use Metal. CUDA support is planned.
 
@@ -92,17 +92,20 @@ in 48 GB of unified memory.
 
 ## Tools
 
-Tools are currently available with Inkling only.
+Both models support Bash and text file reading. Inkling also supports image reading.
 
 Enable file reading and Bash:
 
 ```sh
 cargo run --release -- chat --tool read,bash --cwd /path/to/project
+# Use Bonsai:
+cargo run --release -- chat --model checkpoints/bonsai-2.5-27b \
+  --tool read,bash --cwd /path/to/project
 ```
 
 Ask the model to read a file by path. `read` returns UTF-8 text with line numbers,
-or adds a PNG or JPEG directly to the model's image context. Relative paths use
-`--cwd`; `~/` uses your home directory. Use `--tool read` to enable file reading
+or, with Inkling, adds a PNG or JPEG directly to the model's image context.
+Relative paths use `--cwd`; `~/` uses your home directory. Use `--tool read` to enable file reading
 alone. PDFs and other binary formats are not supported.
 
 For text, the model can select `start_line` (starting at 1) and `max_lines` (200 by

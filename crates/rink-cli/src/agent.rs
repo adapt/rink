@@ -1,10 +1,10 @@
 //! Tool rounds append new suffixes; the session owns the exact KV prefix.
 use anyhow::{Result, ensure};
-use rink_inkling::{
-    Image,
-    chat::{Codec, Invocation},
-};
+use rink_core::chat::{Invocation, ToolCodec};
+use rink_inkling::Image;
 use rink_tools::{ContentPart, ImageFile, Registry, ToolResult};
+#[cfg(target_os = "macos")]
+use std::io::Write;
 use std::{
     io::{BufReader, Seek},
     sync::atomic::{AtomicBool, Ordering},
@@ -35,7 +35,7 @@ struct Part {
     image: Option<(ImageFile, Vec<u32>)>,
 }
 impl Part {
-    fn text(codec: &Codec, name: &str, text: String) -> Result<Self> {
+    fn text(codec: &impl ToolCodec, name: &str, text: String) -> Result<Self> {
         Ok(Self {
             tokens: codec.tool_result(name, &text)?,
             text: Some(text),
@@ -110,13 +110,20 @@ impl ToolLoop {
 
     pub fn run(
         &mut self,
-        codec: &Codec,
+        codec: &impl ToolCodec,
         calls: Vec<Invocation>,
         token_budget: usize,
         cancelled: &AtomicBool,
         mut observe: impl FnMut(ToolEvent<'_>) -> Result<()>,
     ) -> Result<CompletedRound> {
         ensure!(!calls.is_empty(), "empty tool round");
+        let prefix = codec.tool_round_start()?;
+        let suffix = codec.tool_round_end()?;
+        let token_budget = token_budget
+            .checked_sub(prefix.len() + suffix.len())
+            .ok_or_else(|| {
+                anyhow::anyhow!("context is too full to record tool results; no commands were run")
+            })?;
         let minima = calls
             .iter()
             .map(|call| Ok(codec.tool_result(&call.name, OMITTED)?.len()))
@@ -128,7 +135,11 @@ impl ToolLoop {
         );
         let limited = self.rounds >= self.max_rounds;
         self.rounds += usize::from(!limited);
-        let mut parts = Vec::new();
+        let mut parts = vec![Part {
+            tokens: prefix,
+            text: None,
+            image: None,
+        }];
         let mut remaining = token_budget;
         let mut interrupted = false;
         for (call, reserved) in calls.into_iter().zip(minima) {
@@ -170,6 +181,16 @@ impl ToolLoop {
                 }
             }
         }
+        if let Some(part) = parts.last_mut().filter(|p| p.image.is_none()) {
+            part.tokens.extend(suffix);
+        } else {
+            parts.push(Part {
+                tokens: suffix,
+                text: None,
+                image: None,
+            });
+        }
+        parts.retain(|p| !p.tokens.is_empty());
         Ok(CompletedRound {
             parts,
             pause: if interrupted {
@@ -186,7 +207,7 @@ impl ToolLoop {
 }
 
 fn fit_result(
-    codec: &Codec,
+    codec: &impl ToolCodec,
     name: &str,
     content: Vec<ContentPart>,
     budget: usize,
@@ -264,11 +285,116 @@ fn fit_result(
     Ok((parts, notice))
 }
 
+#[cfg(target_os = "macos")]
+pub fn registry(tools: &crate::ToolOptions, images_supported: bool) -> Result<Registry> {
+    let mut registry = rink_tools::Registry::default();
+    if !tools.tool.is_empty() {
+        let cwd = tools
+            .cwd
+            .clone()
+            .unwrap_or(std::env::current_dir()?)
+            .canonicalize()?;
+        let timeout = std::time::Duration::from_millis(tools.tool_timeout_ms);
+        if tools.tool.iter().any(|name| name == "bash") {
+            registry.register(rink_tools::Bash::new(
+                &cwd,
+                timeout,
+                tools.tool_output_bytes as usize,
+            )?)?;
+        }
+        if tools.tool.iter().any(|name| name == "read") {
+            registry.register(
+                rink_tools::Read::new(&cwd, timeout, tools.tool_output_bytes as usize)?
+                    .with_images(images_supported),
+            )?;
+        }
+        eprintln!(
+            "Tools {} enabled with direct host access in {}. Ctrl-C cancels a running tool.",
+            tools.tool.join(", "),
+            cwd.display()
+        );
+    }
+    Ok(registry)
+}
+
+#[cfg(target_os = "macos")]
+fn terminal_text(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() && c != '\n' && c != '\t' {
+            escaped.extend(c.escape_default());
+        } else {
+            escaped.push(c);
+        }
+    }
+    escaped
+}
+
+#[cfg(target_os = "macos")]
+pub fn display_tool(output: &mut impl Write, event: ToolEvent<'_>) -> Result<()> {
+    match event {
+        ToolEvent::Starting(call) => {
+            let arguments = match &call.arguments {
+                Ok(args) => args
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| args.to_string()),
+                Err(_) => "[invalid arguments]".into(),
+            };
+            writeln!(
+                output,
+                "\nTool {}: {}",
+                call.name,
+                terminal_text(&arguments)
+            )?;
+        }
+        ToolEvent::Notice(text) => writeln!(output, "{}", terminal_text(text))?,
+        ToolEvent::Finished(name, result) => {
+            for part in &result.content {
+                let text = match part {
+                    rink_tools::ContentPart::Text(text) => text,
+                    rink_tools::ContentPart::Image(image) => {
+                        writeln!(
+                            output,
+                            "[Image queued: {}]",
+                            terminal_text(&image.path.to_string_lossy())
+                        )?;
+                        continue;
+                    }
+                };
+                let value: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+                if name == "bash" && value.get("stdout").is_some() {
+                    for key in ["stdout", "stderr"] {
+                        if let Some(text) = value[key].as_str().filter(|s| !s.is_empty()) {
+                            writeln!(output, "{}", terminal_text(text))?;
+                        }
+                    }
+                    writeln!(
+                        output,
+                        "[bash: exit {}; signal {}; timeout {}; cancelled {}; output truncated {}]",
+                        value["exit_code"],
+                        value["signal"],
+                        value["timed_out"],
+                        value["cancelled"],
+                        value["stdout_truncated"] == true || value["stderr_truncated"] == true
+                    )?;
+                } else {
+                    writeln!(output, "{}", terminal_text(text))?;
+                }
+            }
+        }
+    }
+    output.flush()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{chat_fixture, session::Session};
     use rink_core::AutoregressiveModel;
+    use rink_inkling::chat::Codec;
     use rink_tools::Tool;
     use serde_json::{Value, json};
     use std::{
@@ -415,6 +541,108 @@ mod tests {
         );
         assert_eq!(*inputs.borrow(), [prompt, reply.tokens()]);
         assert!(!session.pending());
+    }
+
+    #[test]
+    fn bonsai_tools_preserve_cache_across_pauses_and_reserve_complete_native_framing() {
+        use crate::bonsai_chat_fixture as fixture;
+        use rink_bonsai::chat::Codec as BonsaiCodec;
+        let tokenizer = fixture::tokenizer();
+        let codec = BonsaiCodec::new(tokenizer.clone()).unwrap();
+        let first = fixture::wire(
+            &tokenizer,
+            "<tool_call><function=probe></function></tool_call><|im_end|>",
+        );
+        let second = fixture::wire(&tokenizer, "Done.<|im_end|>");
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let inputs = Rc::new(RefCell::new(Vec::new()));
+        let model = Script {
+            seen: seen.clone(),
+            inputs: inputs.clone(),
+            turns: [first.clone().into(), second.clone().into()].into(),
+            current: VecDeque::new(),
+        };
+        let mut session = Session::with_eos(model, &codec.eos());
+        let prompt = codec.user_turn("test", true, 0.0).unwrap();
+        session.start(&prompt, 128).unwrap();
+        let (mut tools, count) = tools(&"🌍<tool_call><|im_start|>".repeat(300), 1);
+        let mut parser = codec.parser(0.0, &[]);
+        for _ in 0..8 {
+            parser
+                .push(session.next_token().unwrap().unwrap(), codec.tokenizer())
+                .unwrap();
+        }
+        assert!(session.pending());
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+        while let Some(token) = session.next_token().unwrap() {
+            parser.push(token, codec.tokenizer()).unwrap();
+        }
+        let flag = AtomicBool::new(false);
+        let format = codec.tool_codec(0.0);
+        let minimum = format.tool_round_start().unwrap().len()
+            + format.tool_result("probe", OMITTED).unwrap().len()
+            + format.tool_round_end().unwrap().len();
+        assert!(
+            tools
+                .run(&format, call(), minimum - 1, &flag, |_| Ok(()))
+                .is_err()
+        );
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+        let result = tools
+            .run(
+                &format,
+                parser.finish(codec.tokenizer()).unwrap(),
+                512,
+                &flag,
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert!(result.token_budget() <= 512);
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        let replies = result.tokens();
+        assert!(
+            codec
+                .tokenizer()
+                .decode(&replies, false)
+                .unwrap()
+                .contains("truncated")
+        );
+        assert!(!replies.contains(&tokenizer.token_to_id("<tool_call>").unwrap()));
+        assert_eq!(
+            replies
+                .iter()
+                .filter(|&&id| id == tokenizer.token_to_id("<|im_start|>").unwrap())
+                .count(),
+            2
+        );
+        session
+            .start_append(result.token_budget(), 1, |model| {
+                result.prefill(|tokens, image| {
+                    assert!(image.is_none());
+                    model.prefill_greedy(tokens)
+                })
+            })
+            .unwrap();
+        assert!(session.pending());
+        let mut parser = codec.parser(0.0, &[]);
+        while let Some(token) = session.next_token().unwrap() {
+            parser.push(token, codec.tokenizer()).unwrap();
+        }
+        assert!(parser.finish(codec.tokenizer()).unwrap().is_empty());
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            *seen.borrow(),
+            [prompt.clone(), first, replies.clone(), second].concat()
+        );
+        assert_eq!(*inputs.borrow(), [prompt, replies]);
+        let limited = tools.run(&format, call(), 1024, &flag, |_| Ok(())).unwrap();
+        assert!(limited.pause.is_some());
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        tools.reset();
+        tools
+            .run(&format, call(), 1024, &AtomicBool::new(true), |_| Ok(()))
+            .unwrap();
+        assert_eq!(count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
