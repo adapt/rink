@@ -11,16 +11,27 @@ fn main() -> anyhow::Result<()> {
     }
     let args: Vec<_> = std::env::args().collect();
     anyhow::ensure!(
-        args.len() == 3,
-        "usage: compare_reference CHECKPOINT REFERENCE.json"
+        (3..=4).contains(&args.len()),
+        "usage: compare_reference CHECKPOINT REFERENCE.json [PREFILL_BATCH]"
     );
     let reference: Reference = serde_json::from_slice(&std::fs::read(&args[2])?)?;
     let mut model =
         rink_bonsai::Bonsai::load(rink_metal::Metal::new()?, &args[1], reference.tokens.len())?;
+    let batch = args.get(3).map(|s| s.parse::<usize>()).transpose()?;
+    if let Some(batch) = batch {
+        model.set_prefill_batch_limit(batch)?;
+    }
     let mut results = Vec::new();
     let mut all_match = true;
     for (i, &token) in reference.tokens.iter().enumerate() {
-        let actual = model.step(token)?;
+        if batch.is_some() && !reference.logits.contains_key(&(i + 1)) {
+            continue;
+        }
+        let actual = if batch.is_some() {
+            model.prefill(&reference.tokens[model.position()..i + 1])?
+        } else {
+            model.step(token)?
+        };
         if let Some(expected) = reference.logits.get(&(i + 1)) {
             anyhow::ensure!(actual.len() == expected.len(), "vocabulary mismatch");
             let mut squared = 0.0;
@@ -47,7 +58,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &serde_json::json!({"all_greedy_match":all_match,"checks":results})
+            &serde_json::json!({"prefill_batch":batch,"all_greedy_match":all_match,"checks":results})
         )?
     );
     anyhow::ensure!(all_match, "greedy predictions differ from the reference");

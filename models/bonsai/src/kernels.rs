@@ -5,7 +5,11 @@ use std::collections::BTreeMap;
 
 pub const SOURCE: KernelSource<'static> = KernelSource {
     name: "bonsai-2.5-v1",
-    metal: Some(include_str!("kernels.metal")),
+    metal: Some(concat!(
+        include_str!("kernels.metal"),
+        "\n",
+        include_str!("prefill.metal")
+    )),
     cuda: None,
     subgroup_size: Some(32),
 };
@@ -34,19 +38,31 @@ impl<A: Accelerator> Kernels<A> {
         let mut entries = BTreeMap::new();
         for name in [
             "embedding",
+            "embedding_batch",
             "hadamard",
+            "hadamard1024",
             "packed_mv",
+            "packed_mv_symmetric",
+            "packed_mm32",
+            "packed_mm64",
             "dense_mv",
+            "dense_mm",
             "rms",
+            "rms_small",
             "rope",
             "cache_write",
             "attention_part",
             "attention_finish",
             "conv",
+            "conv_batch",
+            "conv_save",
+            "delta_gates",
             "delta",
             "swiglu",
             "add",
             "zeros",
+            "greedy_part",
+            "greedy_finish",
         ] {
             entries.insert(name, device.compile(&SOURCE, name)?);
         }

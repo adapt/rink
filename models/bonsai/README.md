@@ -30,11 +30,15 @@ resumes a reply. `/reset` clears both caches. Both native end tokens stop replie
 The default effort `0.9` selects `xhigh` reasoning. Effort `0` disables reasoning;
 values below `1/3` select `low`, and values from `1/3` to below `2/3` select `medium`.
 
-This version supports text input. Images, tool calls, MTP, and batched prefill
+This version supports text input and batched prefill. Images, tool calls, and MTP
 are not implemented for Bonsai. Inkling still supports its existing features.
-Bonsai rejects `--image`, `--tool`, `--kv-cache f32`, and `--prefill-batch`.
-Its prefill processes one token at a time and skips intermediate vocabulary
-projections. Batched prefill is the main remaining performance task.
+Bonsai rejects `--image`, `--tool`, and `--kv-cache f32`.
+
+Prefill processes up to 512 tokens per batch by default. `--prefill-batch` selects
+a power of two from 32 through 4,096. The workspace is allocated once. Larger
+batches need more activation memory. Recurrent updates stay in causal order;
+full attention masks future tokens. Only the last prompt token uses the vocabulary
+projection. Decode selects the next token on the GPU and reads back four bytes.
 
 ## Storage and arithmetic
 
@@ -47,7 +51,11 @@ vector. It does not upload the unused vision tower or an MTP head.
 
 Activations, auxiliary weights, and KV storage use FP16, as in the published
 runtime. Dot products, normalization, attention softmax, Hadamard transforms,
-and recurrent state use FP32 arithmetic. The context limit is 262,144 tokens.
+and recurrent state use FP32 arithmetic. The packed projection fast path applies
+only when the stored FP16 bias is exactly the negative scale and all four weight
+values are representable. It factors that scale after a partial dot product;
+other affine matrices use explicit FP16 dequantization. This changes the FP32
+reduction order, not the represented weights. The context limit is 262,144 tokens.
 At that capacity, KV and recurrent caches reserve 16.14 GiB. Attention workspace
 grows linearly with the configured capacity; it does not hold a quadratic score
 matrix. The same allocations are reused throughout the conversation.
@@ -90,6 +98,9 @@ array of token IDs. Compare the saved reference with:
 ```sh
 cargo run --release -p rink-bonsai --example compare_reference -- \
   checkpoints/bonsai-2.5-27b /path/to/reference.json
+# Compare batched prefill at the same saved positions:
+cargo run --release -p rink-bonsai --example compare_reference -- \
+  checkpoints/bonsai-2.5-27b /path/to/reference.json 512
 ```
 
 Reference versions: PrismML revision `aa432fd0e17612f6684e728d4d3c42b6656bcabb`,

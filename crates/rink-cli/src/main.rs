@@ -441,7 +441,15 @@ fn main() -> Result<()> {
             {
                 if models::Kind::detect(&model)? == models::Kind::Bonsai {
                     bonsai::validate(kv_cache, prefill_batch)?;
-                    return bonsai::chat(&model, max_tokens, context, effort, show_thinking, tools);
+                    return bonsai::chat(
+                        &model,
+                        max_tokens,
+                        context,
+                        effort,
+                        show_thinking,
+                        tools,
+                        prefill_batch,
+                    );
                 }
                 chat::run(
                     model,
@@ -495,7 +503,15 @@ fn generate(
     if models::Kind::detect(&directory)? == models::Kind::Bonsai {
         bonsai::validate(kv_cache, prefill_batch)?;
         ensure!(image.is_none(), "Bonsai image input is not implemented yet");
-        return bonsai::generate(&directory, &prompt, max_tokens, context, raw, effort);
+        return bonsai::generate(
+            &directory,
+            &prompt,
+            max_tokens,
+            context,
+            raw,
+            effort,
+            prefill_batch,
+        );
     }
     use anyhow::Context;
     use rink_core::{Accelerator, AutoregressiveModel};

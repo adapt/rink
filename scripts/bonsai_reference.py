@@ -88,6 +88,7 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--fixture", type=Path)
     parser.add_argument("--tokens", type=Path, help="JSON array of token IDs for a native checkpoint comparison")
+    parser.add_argument("--positions", help="Additional one-based logit positions, separated by commas")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     sys.path.insert(0, str(args.runtime.resolve()))
@@ -101,6 +102,9 @@ def main():
     install(model, config, weights, Packed)
     del weights
     tokens = json.loads(args.tokens.read_text()) if args.tokens else [(i*37+11)%256 for i in range(300)]
+    positions = {127, 255, 256, 257, len(tokens)}
+    if args.positions:
+        positions.update(int(value) for value in args.positions.split(","))
     cache = model.make_cache()
     points = {}
     for i, token in enumerate(tokens):
@@ -108,7 +112,7 @@ def main():
         hidden = model.model(mx.array([[token]]), cache=cache)
         logits = model.lm_head(hidden)
         mx.eval(logits)
-        if i < 16 or i+1 in (127, 255, 256, 257, len(tokens)):
+        if i < 16 or i+1 in positions:
             points[str(i+1)] = np.asarray(logits).astype(np.float32).reshape(-1).tolist()
         if (i+1)%32 == 0:
             print(f"reference {i+1}/{len(tokens)}", flush=True)

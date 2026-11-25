@@ -4,4 +4,4 @@ pub mod config;
 pub mod kernels;
 pub mod model;
 pub use config::Config;
-pub use model::Bonsai;
+pub use model::{Bonsai, DEFAULT_PREFILL_BATCH};

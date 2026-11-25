@@ -16,12 +16,12 @@ pub fn validate(kv: KvCachePrecision, batch: Option<usize>) -> Result<()> {
         "Bonsai uses FP16 activations and KV storage; use --kv-cache f16"
     );
     ensure!(
-        batch.is_none(),
-        "Bonsai currently uses sequential prefill; --prefill-batch is an Inkling option"
+        batch.is_none_or(|n| (1..=4096).contains(&n) && n.is_power_of_two()),
+        "prefill batch must be a power of two from 1 through 4096"
     );
     Ok(())
 }
-fn load(directory: &Path, context: usize) -> Result<Bonsai<Metal>> {
+fn load(directory: &Path, context: usize, batch: Option<usize>) -> Result<Bonsai<Metal>> {
     let device = Metal::new()?;
     let config = rink_bonsai::Config::load(directory.join("config.json"))?;
     let cache = config.text_config.cache_bytes(context)?;
@@ -30,7 +30,12 @@ fn load(directory: &Path, context: usize) -> Result<Bonsai<Metal>> {
         device.name(),
         cache as f64 / (1u64 << 30) as f64
     );
-    Bonsai::load(device, directory, context)
+    Bonsai::load_with_prefill_batch(
+        device,
+        directory,
+        context,
+        batch.unwrap_or(rink_bonsai::DEFAULT_PREFILL_BATCH),
+    )
 }
 fn codec(directory: &Path) -> Result<Codec> {
     let codec = Codec::new(
@@ -52,7 +57,7 @@ fn prefill(model: &mut Bonsai<Metal>, tokens: &[u32]) -> Result<u32> {
     eprintln!("Prefilling {} tokens…", tokens.len());
     let start = Instant::now();
     let mut status = crate::progress::StatusLine::new();
-    let logits = model.prefill_with_progress(tokens, |completed| {
+    let next = model.prefill_greedy_with_progress(tokens, |completed| {
         status.update(
             &format!(
                 "Prefill: {completed}/{} tokens; {:.1}s",
@@ -63,7 +68,6 @@ fn prefill(model: &mut Bonsai<Metal>, tokens: &[u32]) -> Result<u32> {
         );
     })?;
     status.clear();
-    let next = rink_core::greedy(&logits)?;
     let seconds = start.elapsed().as_secs_f64();
     eprintln!(
         "Prefill: {} tokens in {seconds:.2}s ({:.1} tok/s)",
@@ -80,6 +84,7 @@ pub fn generate(
     context: usize,
     raw: bool,
     effort: f32,
+    batch: Option<usize>,
 ) -> Result<()> {
     let codec = codec(directory)?;
     let tokens = if raw {
@@ -105,7 +110,7 @@ pub fn generate(
             <= context,
         "prompt and generation exceed --context"
     );
-    let mut model = load(directory, context)?;
+    let mut model = load(directory, context, batch)?;
     let mut next = prefill(&mut model, &tokens)?;
     let mut output = std::io::stdout().lock();
     let mut stream = codec.tokenizer().decode_stream(false);
@@ -142,13 +147,14 @@ pub fn chat(
     effort: f32,
     show_thinking: bool,
     tools: ToolOptions,
+    batch: Option<usize>,
 ) -> Result<()> {
     ensure!(
         tools.tool.is_empty(),
         "Bonsai tool-call parsing is not implemented; --tool is currently supported by Inkling"
     );
     let codec = codec(directory)?;
-    let mut session = Session::with_eos(load(directory, context)?, &codec.eos());
+    let mut session = Session::with_eos(load(directory, context, batch)?, &codec.eos());
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     let mut line = String::new();

@@ -54,9 +54,14 @@ pub mod loaded {
                 }
                 Kind::Bonsai => {
                     crate::bonsai::validate(kv, batch)?;
-                    Ok(Self::Bonsai(Box::new(rink_bonsai::Bonsai::load(
-                        device, directory, context,
-                    )?)))
+                    Ok(Self::Bonsai(Box::new(
+                        rink_bonsai::Bonsai::load_with_prefill_batch(
+                            device,
+                            directory,
+                            context,
+                            batch.unwrap_or(rink_bonsai::DEFAULT_PREFILL_BATCH),
+                        )?,
+                    )))
                 }
             }
         }
@@ -78,7 +83,7 @@ pub mod loaded {
         pub fn prefill_batch_limit(&self) -> usize {
             match self {
                 Self::Inkling(m) => m.prefill_batch_limit(),
-                Self::Bonsai(_) => 1,
+                Self::Bonsai(m) => m.prefill_batch_limit(),
             }
         }
         pub fn prefill_progress(
@@ -94,7 +99,7 @@ pub mod loaded {
                     rink_inkling::PrefillProgress::Complete => progress(tokens.len()),
                     _ => {}
                 }),
-                Self::Bonsai(m) => rink_core::greedy(&m.prefill_with_progress(tokens, progress)?),
+                Self::Bonsai(m) => m.prefill_greedy_with_progress(tokens, progress),
             }
         }
     }
