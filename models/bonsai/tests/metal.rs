@@ -346,92 +346,117 @@ fn matrix_tiles_match_scalar_products_and_guard_partial_tiles() {
     }
     let mut device = rink_metal::Metal::new().unwrap();
     let kernels = Kernels::compile(&mut device).unwrap();
-    for (batch, rows, cols) in [
-        (2, 3, 128),
-        (31, 65, 384),
-        (33, 48, 5120),
-        (65, 3, 17408),
-        (128, 65, 128),
-    ] {
-        let words: Vec<u32> = (0..rows * cols / 16)
-            .map(|i| (i as u32).wrapping_mul(0x9e3779b9).wrapping_add(0x12345678))
-            .collect();
-        let scales: Vec<f16> = (0..rows * cols / 128)
-            .map(|i| f16::from_f32(0.003 + (i % 31) as f32 * 0.0002))
-            .collect();
-        let biases: Vec<f16> = scales
-            .iter()
-            .enumerate()
-            .map(|(i, s)| f16::from_f32(-s.to_f32() * (0.8 + (i % 7) as f32 * 0.03)))
-            .collect();
-        let x: Vec<f16> = (0..batch * cols)
-            .map(|i| f16::from_f32(((i * 17 % 113) as f32 - 56.) / 37.))
-            .collect();
-        let w: Vec<f16> = (0..rows * cols)
-            .map(|i| {
-                f16::from_f32(
-                    ((words[i / 16] >> (2 * (i % 16))) & 3) as f32 * scales[i / 128].to_f32()
-                        + biases[i / 128].to_f32(),
-                )
-            })
-            .collect();
-        let packed = device.upload(bytemuck::cast_slice(&words)).unwrap();
-        let dense = device.upload(bytemuck::cast_slice(&bits(&w))).unwrap();
-        let sb = device.upload(bytemuck::cast_slice(&bits(&scales))).unwrap();
-        let bb = device.upload(bytemuck::cast_slice(&bits(&biases))).unwrap();
-        let xb = device.upload(bytemuck::cast_slice(&bits(&x))).unwrap();
-        let expected: Vec<f32> = (0..batch * rows)
-            .map(|i| {
-                f16::from_f64(
-                    (0..cols)
-                        .map(|k| {
-                            x[(i / rows) * cols + k].to_f64() * w[(i % rows) * cols + k].to_f64()
-                        })
-                        .sum(),
-                )
-                .to_f32()
-            })
-            .collect();
-        for name in ["packed_mm32", "packed_mm64", "dense_mm"] {
-            let out = device
-                .upload(bytemuck::cast_slice(&vec![0x7e00u16; batch * rows + 64]))
-                .unwrap();
-            let buffers = if name == "dense_mm" {
-                vec![&dense, &xb, &out]
-            } else {
-                vec![&packed, &sb, &bb, &xb, &out]
-            };
-            let tile = if name == "packed_mm32" { 32 } else { 64 };
-            // SAFETY: packed/dense extents, bounded row/token tails, and tile geometry match the kernel ABI.
-            unsafe {
-                kernels
-                    .run(
-                        &mut device,
-                        name,
-                        &buffers,
-                        Params::new(&[cols, rows, batch], &[]),
-                        rows.div_ceil(64) * batch.div_ceil(tile) * 128,
-                        128,
+    for symmetric in [false, true] {
+        for (batch, rows, cols) in [
+            (2, 3, 128),
+            (31, 65, 384),
+            (33, 48, 5120),
+            (65, 3, 17408),
+            (128, 65, 128),
+        ] {
+            let words: Vec<u32> = (0..rows * cols / 16)
+                .map(|i| (i as u32).wrapping_mul(0x9e3779b9).wrapping_add(0x12345678))
+                .collect();
+            let scales: Vec<f16> = (0..rows * cols / 128)
+                .map(|i| {
+                    f16::from_f32(
+                        (0.003 + (i % 31) as f32 * 0.0002) * if i % 2 == 0 { 1. } else { -1. },
                     )
-                    .unwrap();
-            }
-            let bytes = device.read(&out).unwrap();
-            assert!(
-                bytes[batch * rows * 2..]
-                    .chunks_exact(2)
-                    .all(|b| b == [0, 0x7e]),
-                "{name} output guard"
-            );
-            for (i, (bytes, &want)) in bytes[..batch * rows * 2]
-                .chunks_exact(2)
-                .zip(&expected)
+                })
+                .collect();
+            let biases: Vec<f16> = scales
+                .iter()
                 .enumerate()
-            {
-                let actual = f16::from_bits(u16::from_le_bytes(bytes.try_into().unwrap())).to_f32();
+                .map(|(i, s)| {
+                    f16::from_f32(
+                        -s.to_f32()
+                            * if symmetric {
+                                1.
+                            } else {
+                                0.8 + (i % 7) as f32 * 0.03
+                            },
+                    )
+                })
+                .collect();
+            let x: Vec<f16> = (0..batch * cols)
+                .map(|i| f16::from_f32(((i * 17 % 113) as f32 - 56.) / 37.))
+                .collect();
+            let w: Vec<f16> = (0..rows * cols)
+                .map(|i| {
+                    f16::from_f32(
+                        ((words[i / 16] >> (2 * (i % 16))) & 3) as f32 * scales[i / 128].to_f32()
+                            + biases[i / 128].to_f32(),
+                    )
+                })
+                .collect();
+            let packed = device.upload(bytemuck::cast_slice(&words)).unwrap();
+            let dense = device.upload(bytemuck::cast_slice(&bits(&w))).unwrap();
+            let sb = device.upload(bytemuck::cast_slice(&bits(&scales))).unwrap();
+            let bb = device.upload(bytemuck::cast_slice(&bits(&biases))).unwrap();
+            let xb = device.upload(bytemuck::cast_slice(&bits(&x))).unwrap();
+            let expected: Vec<f32> = (0..batch * rows)
+                .map(|i| {
+                    f16::from_f64(
+                        (0..cols)
+                            .map(|k| {
+                                x[(i / rows) * cols + k].to_f64()
+                                    * w[(i % rows) * cols + k].to_f64()
+                            })
+                            .sum(),
+                    )
+                    .to_f32()
+                })
+                .collect();
+            let mut names = vec!["packed_mm32", "packed_mm64", "dense_mm"];
+            if symmetric {
+                names.extend(["packed_mm32_symmetric", "packed_mm64_symmetric"]);
+            }
+            for name in names {
+                let out = device
+                    .upload(bytemuck::cast_slice(&vec![0x7e00u16; batch * rows + 64]))
+                    .unwrap();
+                let buffers = if name == "dense_mm" {
+                    vec![&dense, &xb, &out]
+                } else {
+                    vec![&packed, &sb, &bb, &xb, &out]
+                };
+                let (tile, row_tile) = match name {
+                    "packed_mm32" | "packed_mm32_symmetric" => (32, 64),
+                    "dense_mm" => (16, 16),
+                    _ => (64, 64),
+                };
+                // SAFETY: packed/dense extents, bounded row/token tails, and tile geometry match the kernel ABI.
+                unsafe {
+                    kernels
+                        .run(
+                            &mut device,
+                            name,
+                            &buffers,
+                            Params::new(&[cols, rows, batch], &[]),
+                            rows.div_ceil(row_tile) * batch.div_ceil(tile) * 128,
+                            128,
+                        )
+                        .unwrap();
+                }
+                let bytes = device.read(&out).unwrap();
                 assert!(
-                    (actual - want).abs() <= 0.002 + 0.001 * want.abs(),
-                    "{name} [{batch},{rows},{cols}] output {i}: {actual} vs {want}"
+                    bytes[batch * rows * 2..]
+                        .chunks_exact(2)
+                        .all(|b| b == [0, 0x7e]),
+                    "{name} output guard"
                 );
+                for (i, (bytes, &want)) in bytes[..batch * rows * 2]
+                    .chunks_exact(2)
+                    .zip(&expected)
+                    .enumerate()
+                {
+                    let actual =
+                        f16::from_bits(u16::from_le_bytes(bytes.try_into().unwrap())).to_f32();
+                    assert!(
+                        (actual - want).abs() <= 0.002 + 0.001 * want.abs(),
+                        "{name} [{batch},{rows},{cols}] output {i}: {actual} vs {want}"
+                    );
+                }
             }
         }
     }
@@ -652,6 +677,294 @@ fn attention_partitions_match_scalar_softmax_across_context_boundaries() {
                     "position {position}, partition {partition}, output {i}: {actual} vs {want}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn recurrent_vector_updates_match_scalar_state_and_outputs() {
+    use half::f16;
+    use rink_bonsai::kernels::{Kernels, Params};
+    use rink_core::Accelerator;
+    let mut device = rink_metal::Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut device).unwrap();
+    let (dk, dv, hk, hv) = (128usize, 5usize, 2usize, 6usize);
+    let stride = 2 * hk * dk + hv * dv;
+    let halves = |count, multiplier, divisor| -> Vec<f16> {
+        (0..count)
+            .map(|i| f16::from_f32(((i * multiplier % 101) as f32 - 50.) / divisor))
+            .collect()
+    };
+    for batch in [1usize, 33, 512] {
+        let q = halves(batch * hk * dk, 17, 601.);
+        let k = halves(batch * hk * dk, 31, 619.);
+        let v = halves(batch * stride, 13, 53.);
+        let gates: Vec<f32> = (0..batch * hv)
+            .flat_map(|i| [0.75 + (i % 19) as f32 / 80., 0.2 + (i % 17) as f32 / 23.])
+            .collect();
+        let initial: Vec<f32> = (0..hv * dv * dk)
+            .map(|i| ((i * 7 % 71) as f32 - 35.) / 1000.)
+            .collect();
+        let mut expected_state: Vec<f64> = initial.iter().map(|&v| v as f64).collect();
+        let mut expected = vec![0f32; batch * hv * dv];
+        for t in 0..batch {
+            for row in 0..hv * dv {
+                let head = row / dv;
+                let kh = head / (hv / hk);
+                let index = (t * hk + kh) * dk;
+                let state = &mut expected_state[row * dk..(row + 1) * dk];
+                for value in state.iter_mut() {
+                    *value *= gates[(t * hv + head) * 2] as f64;
+                }
+                let memory: f64 = state
+                    .iter()
+                    .zip(&k[index..index + dk])
+                    .map(|(s, k)| s * k.to_f64())
+                    .sum();
+                let correction = (v[t * stride + 2 * hk * dk + row].to_f64() - memory)
+                    * gates[(t * hv + head) * 2 + 1] as f64;
+                for (s, k) in state.iter_mut().zip(&k[index..index + dk]) {
+                    *s += k.to_f64() * correction;
+                }
+                let value: f64 = state
+                    .iter()
+                    .zip(&q[index..index + dk])
+                    .map(|(s, q)| s * q.to_f64())
+                    .sum();
+                expected[t * hv * dv + row] = f16::from_f64(value).to_f32();
+            }
+        }
+        let upload = |device: &mut rink_metal::Metal, values: &[f16]| {
+            device
+                .upload(bytemuck::cast_slice(
+                    &values.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                ))
+                .unwrap()
+        };
+        let qb = upload(&mut device, &q);
+        let kb = upload(&mut device, &k);
+        let vb = upload(&mut device, &v);
+        let gb = device.upload(bytemuck::cast_slice(&gates)).unwrap();
+        for name in ["delta", "delta128"] {
+            let mut state = initial.clone();
+            state.extend([f32::NAN; 16]);
+            let state = device.upload(bytemuck::cast_slice(&state)).unwrap();
+            let out = device
+                .upload(bytemuck::cast_slice(&vec![0x7e00u16; expected.len() + 64]))
+                .unwrap();
+            // SAFETY: both kernels own one state row per SIMD group; q/k heads,
+            // gate pairs, token strides, and the output prefix match their ABI.
+            unsafe {
+                kernels
+                    .run(
+                        &mut device,
+                        name,
+                        &[&qb, &kb, &vb, &gb, &state, &out],
+                        Params::new(&[dk, dv, hv, hk, batch], &[]),
+                        hv * dv * 32,
+                        128,
+                    )
+                    .unwrap();
+            }
+            let bytes = device.read(&out).unwrap();
+            assert!(
+                bytes[expected.len() * 2..]
+                    .chunks_exact(2)
+                    .all(|b| b == [0, 0x7e])
+            );
+            for (bytes, want) in bytes.chunks_exact(2).zip(&expected) {
+                let actual = f16::from_bits(u16::from_le_bytes(bytes.try_into().unwrap())).to_f32();
+                assert!(
+                    (actual - want).abs() <= 0.0001 + 0.001 * want.abs(),
+                    "{name}, batch {batch}: {actual} vs {want}"
+                );
+            }
+            let bytes = device.read(&state).unwrap();
+            for (bytes, want) in bytes.chunks_exact(4).zip(&expected_state) {
+                let actual = f32::from_le_bytes(bytes.try_into().unwrap()) as f64;
+                assert!(
+                    (actual - want).abs() <= 0.00001,
+                    "{name}, batch {batch}, state: {actual} vs {want}"
+                );
+            }
+            assert!(
+                bytes[initial.len() * 4..]
+                    .chunks_exact(4)
+                    .all(|b| f32::from_le_bytes(b.try_into().unwrap()).is_nan())
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn fused_mlp_preserves_projection_rounding_and_partial_tiles() {
+    use half::f16;
+    use rink_bonsai::kernels::{Kernels, Params};
+    use rink_core::Accelerator;
+    let mut device = rink_metal::Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut device).unwrap();
+    for (batch, rows, cols) in [
+        (1usize, 65usize, 5120usize),
+        (2, 3, 128),
+        (31, 33, 384),
+        (64, 64, 5120),
+        (65, 65, 128),
+        (512, 33, 128),
+    ] {
+        let mut upload_words = |factor: u32| {
+            device
+                .upload(bytemuck::cast_slice(
+                    &(0..rows * cols / 16)
+                        .map(|i| (i as u32).wrapping_mul(factor).wrapping_add(0x12345678))
+                        .collect::<Vec<_>>(),
+                ))
+                .unwrap()
+        };
+        let wg = upload_words(0x9e3779b9);
+        let wu = upload_words(0x8e5779b9);
+        let mut upload_scales = |offset: usize| {
+            let scales: Vec<_> = (0..rows * cols / 128)
+                .map(|i| {
+                    f16::from_f32(
+                        (0.003 + ((i + offset) % 31) as f32 * 0.0002)
+                            * if i % 2 == 0 { 1. } else { -1. },
+                    )
+                    .to_bits()
+                })
+                .collect();
+            let biases: Vec<_> = scales.iter().map(|&v| v ^ 0x8000).collect();
+            (
+                device.upload(bytemuck::cast_slice(&scales)).unwrap(),
+                device.upload(bytemuck::cast_slice(&biases)).unwrap(),
+            )
+        };
+        let (sg, bg) = upload_scales(0);
+        let (su, bu) = upload_scales(7);
+        let x: Vec<_> = (0..batch * cols)
+            .map(|i| f16::from_f32(((i * 17 % 113) as f32 - 56.) / 37.).to_bits())
+            .collect();
+        let x = device.upload(bytemuck::cast_slice(&x)).unwrap();
+        let gate = device.allocate(batch * rows * 2).unwrap();
+        let up = device.allocate(batch * rows * 2).unwrap();
+        let expected = device.allocate(batch * rows * 2).unwrap();
+        let actual = device
+            .upload(bytemuck::cast_slice(&vec![0x7e00u16; batch * rows + 64]))
+            .unwrap();
+        // SAFETY: both matrices use the symmetric affine mapping with all four codes.
+        // Each dispatch owns the stated row/token prefix; tails have NaN guards.
+        unsafe {
+            for (w, s, b, out) in [(&wg, &sg, &bg, &gate), (&wu, &su, &bu, &up)] {
+                kernels
+                    .run(
+                        &mut device,
+                        if batch == 1 {
+                            "packed_mv_symmetric"
+                        } else {
+                            "packed_mm64_symmetric"
+                        },
+                        &[w, s, b, &x, out],
+                        Params::new(&[cols, rows, batch], &[]),
+                        if batch == 1 {
+                            rows.div_ceil(2) * 32
+                        } else {
+                            rows.div_ceil(64) * batch.div_ceil(64) * 128
+                        },
+                        128,
+                    )
+                    .unwrap();
+            }
+            kernels
+                .run(
+                    &mut device,
+                    "swiglu",
+                    &[&gate, &up, &expected],
+                    Params::new(&[batch * rows], &[]),
+                    batch * rows,
+                    256,
+                )
+                .unwrap();
+            kernels
+                .run(
+                    &mut device,
+                    if batch == 1 {
+                        "mlp_mv"
+                    } else if batch <= 32 {
+                        "mlp_mm32"
+                    } else {
+                        "mlp_mm"
+                    },
+                    &[&wg, &sg, &bg, &wu, &su, &bu, &x, &actual],
+                    Params::new(&[cols, rows, batch], &[]),
+                    if batch == 1 {
+                        rows.div_ceil(2) * 32
+                    } else {
+                        rows.div_ceil(32) * batch.div_ceil(if batch <= 32 { 32 } else { 64 }) * 128
+                    },
+                    128,
+                )
+                .unwrap();
+        }
+        let want = device.read(&expected).unwrap();
+        let got = device.read(&actual).unwrap();
+        assert_eq!(
+            &got[..want.len()],
+            &want,
+            "[{batch},{rows},{cols}] fused projection/activation differs"
+        );
+        assert!(got[want.len()..].chunks_exact(2).all(|b| b == [0, 0x7e]));
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal GPU"]
+fn symmetric_matrix_handles_fp16_scale_boundaries() {
+    use half::f16;
+    use rink_bonsai::kernels::{Kernels, Params};
+    use rink_core::Accelerator;
+    let mut device = rink_metal::Metal::new().unwrap();
+    let kernels = Kernels::compile(&mut device).unwrap();
+    let scales: Vec<u16> = [0u16, 0x8000, 1, 0x8001, 0x400, 0x8400, 0x77ff, 0xf7ff]
+        .into_iter()
+        .flat_map(|s| [s; 4])
+        .collect();
+    let biases: Vec<u16> = scales.iter().map(|&s| s ^ 0x8000).collect();
+    let words: Vec<u32> = (0..32).flat_map(|r| [(r % 4) * 0x55555555u32; 8]).collect();
+    let x: Vec<u16> = [1.0f32, f16::MIN_POSITIVE.to_f32()]
+        .into_iter()
+        .flat_map(|x| [f16::from_f32(x).to_bits(); 128])
+        .collect();
+    let w = device.upload(bytemuck::cast_slice(&words)).unwrap();
+    let s = device.upload(bytemuck::cast_slice(&scales)).unwrap();
+    let b = device.upload(bytemuck::cast_slice(&biases)).unwrap();
+    let x = device.upload(bytemuck::cast_slice(&x)).unwrap();
+    let mut reference = None;
+    for name in [
+        "packed_mm32",
+        "packed_mm32_symmetric",
+        "packed_mm64",
+        "packed_mm64_symmetric",
+    ] {
+        let y = device.allocate(2 * 32 * 2).unwrap();
+        // SAFETY: 32 rows of 128 coefficients, two tokens, and a single padded tile.
+        unsafe {
+            kernels
+                .run(
+                    &mut device,
+                    name,
+                    &[&w, &s, &b, &x, &y],
+                    Params::new(&[128, 32, 2], &[]),
+                    128,
+                    128,
+                )
+                .unwrap();
+        }
+        let output = device.read(&y).unwrap();
+        if let Some(ref reference) = reference {
+            assert_eq!(&output, reference, "{name} changed FP16 boundary values");
+        } else {
+            reference = Some(output);
         }
     }
 }

@@ -53,9 +53,13 @@ Activations, auxiliary weights, and KV storage use FP16, as in the published
 runtime. Dot products, normalization, attention softmax, Hadamard transforms,
 and recurrent state use FP32 arithmetic. The packed projection fast path applies
 only when the stored FP16 bias is exactly the negative scale and all four weight
-values are representable. It factors that scale after a partial dot product;
-other affine matrices use explicit FP16 dequantization. This changes the FP32
-reduction order, not the represented weights. The context limit is 262,144 tokens.
+values are representable. Decode factors that scale after a partial dot product.
+Prefill unpacks those weights with exact FP16 arithmetic and FP32 matrix
+accumulators. Other affine matrices retain their generic kernels. Compatible
+gate and up projections share one kernel with SiLU; both projection results
+still round to FP16 before the activation. Recurrent heads of width 128 use
+vector loads and retain FP32 state. Reduction orders can differ from MLX; the
+represented weights and arithmetic precision do not change. The context limit is 262,144 tokens.
 At that capacity, KV and recurrent caches reserve 16.14 GiB. Attention workspace
 grows linearly with the configured capacity; it does not hold a quadratic score
 matrix. The same allocations are reused throughout the conversation.

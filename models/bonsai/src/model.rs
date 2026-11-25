@@ -759,7 +759,7 @@ impl<A: Accelerator> Bonsai<A> {
                         false,
                     )?;
                     r.run(
-                        "delta",
+                        if dk == 128 { "delta128" } else { "delta" },
                         &[&s.q, &s.k, &s.conv, &s.delta_gates, state, &s.att],
                         &[
                             dk,
@@ -815,15 +815,7 @@ impl<A: Accelerator> Bonsai<A> {
                 1.0,
                 true,
             )?;
-            r.packed_group(&[(&layer.gate, &s.gate), (&layer.up, &s.up)], &s.norm)?;
-            r.run(
-                "swiglu",
-                &[&s.gate, &s.up, &s.activation],
-                &[batch * t.intermediate_size],
-                &[],
-                batch * t.intermediate_size,
-                256,
-            )?;
+            r.mlp(&layer.gate, &layer.up, &s.norm, &s.activation)?;
             r.packed(&layer.down, &s.activation, &s.residual)?;
             r.run(
                 "add",
@@ -976,6 +968,73 @@ impl<A: Accelerator> Runner<'_, A> {
         }
         Ok(())
     }
+    fn mlp(
+        &mut self,
+        gate: &Packed<A::Buffer>,
+        up: &Packed<A::Buffer>,
+        x: &A::Buffer,
+        out: &A::Buffer,
+    ) -> Result<()> {
+        // Rotation IDs compare the complete sign vectors and block sizes. Both
+        // projections must consume the same rounded activation before fusion.
+        if gate.symmetric && up.symmetric && gate.rotation_id == up.rotation_id {
+            if let Some(signs) = &gate.signs {
+                self.run(
+                    if gate.block == 1024 {
+                        "hadamard1024"
+                    } else {
+                        "hadamard"
+                    },
+                    &[x, signs, &self.scratch.rotation],
+                    &[gate.block, 0, gate.cols],
+                    &[],
+                    self.batch * gate.cols / gate.block * 256,
+                    256,
+                )?;
+            }
+            self.run(
+                match self.batch {
+                    1 => "mlp_mv",
+                    2..=32 => "mlp_mm32",
+                    _ => "mlp_mm",
+                },
+                &[
+                    &gate.weight,
+                    &gate.scales,
+                    &gate.biases,
+                    &up.weight,
+                    &up.scales,
+                    &up.biases,
+                    if gate.signs.is_some() {
+                        &self.scratch.rotation
+                    } else {
+                        x
+                    },
+                    out,
+                ],
+                &[gate.cols, gate.rows, self.batch],
+                &[],
+                if self.batch == 1 {
+                    gate.rows.div_ceil(2) * 32
+                } else {
+                    gate.rows.div_ceil(32)
+                        * self.batch.div_ceil(if self.batch <= 32 { 32 } else { 64 })
+                        * 128
+                },
+                128,
+            )
+        } else {
+            self.packed_group(&[(gate, &self.scratch.gate), (up, &self.scratch.up)], x)?;
+            self.run(
+                "swiglu",
+                &[&self.scratch.gate, &self.scratch.up, out],
+                &[self.batch * gate.rows],
+                &[],
+                self.batch * gate.rows,
+                256,
+            )
+        }
+    }
     fn multiply(
         &mut self,
         m: &Packed<A::Buffer>,
@@ -990,10 +1049,13 @@ impl<A: Accelerator> Runner<'_, A> {
                 } else {
                     "packed_mv"
                 }
-            } else if tile == 32 {
-                "packed_mm32"
             } else {
-                "packed_mm64"
+                match (tile, m.symmetric) {
+                    (32, true) => "packed_mm32_symmetric",
+                    (32, false) => "packed_mm32",
+                    (_, true) => "packed_mm64_symmetric",
+                    (_, false) => "packed_mm64",
+                }
             },
             &[&m.weight, &m.scales, &m.biases, input, out],
             &[m.cols, m.rows, self.batch],
@@ -1019,7 +1081,7 @@ impl<A: Accelerator> Runner<'_, A> {
             if self.batch == 1 {
                 m.rows * 256
             } else {
-                m.rows.div_ceil(64) * self.batch.div_ceil(64) * 128
+                m.rows.div_ceil(16) * self.batch.div_ceil(16) * 128
             },
             if self.batch == 1 { 256 } else { 128 },
         )
@@ -1185,6 +1247,21 @@ mod tests {
             &TensorView::new(Dtype::F32, vec![1], &s).unwrap(),
             &TensorView::new(Dtype::F32, vec![1], &b).unwrap()
         ));
+    }
+
+    #[test]
+    fn symmetric_half_dequantization_preserves_every_admitted_weight() {
+        for bits in 0..=u16::MAX {
+            let scale = f16::from_bits(bits).to_f32();
+            if !scale.is_finite() || scale.abs() > 32752. {
+                continue;
+            }
+            for code in 0..4 {
+                let affine = f16::from_f32(code as f32 * scale - scale);
+                let symmetric = f16::from_f32((code as f32 - 1.) * scale);
+                assert_eq!(affine, symmetric, "scale {scale}, code {code}");
+            }
+        }
     }
 
     #[test]

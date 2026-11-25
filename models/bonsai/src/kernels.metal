@@ -95,6 +95,26 @@ kernel void packed_mv_symmetric(device const uint*w [[buffer(0)]],device const h
  for(uint r=0;r<2;r++){float sum=simd_sum(sums[r]);if(lane==0 && row+r<p.u[1])y[row+r]=half(sum);}
 }
 
+// The same dot-product order as packed_mv_symmetric, shared across gate/up.
+kernel void mlp_mv(device const uint*wg [[buffer(0)]],device const half*sg [[buffer(1)]],device const half*bg [[buffer(2)]],
+ device const uint*wu [[buffer(3)]],device const half*su [[buffer(4)]],device const half*bu [[buffer(5)]],device const half*x [[buffer(6)]],device half*y [[buffer(7)]],
+ constant Params&p [[buffer(15)]],uint gid [[thread_position_in_grid]],uint lane [[thread_index_in_simdgroup]]) {
+ uint row=(gid/32)*2,width=p.u[0];float g[2]={0,0},u[2]={0,0};
+ for(uint word=lane;word<width/16;word+=32) {
+  float4 inputs[4];float input_sum=0;
+  for(uint j=0;j<4;j++){float4 v=float4(*((device const half4*)(x+word*16+4*j)));input_sum+=(v.x+v.y)+(v.z+v.w);inputs[j]=v*float4(1.f,0.25f,0.0625f,0.015625f);}
+  for(uint r=0;r<2;r++)if(row+r<p.u[1]) {
+   uint idx=(row+r)*(width/16)+word;uchar4 gb=as_type<uchar4>(wg[idx]),ub=as_type<uchar4>(wu[idx]);float gd=0,ud=0;
+   for(uint j=0;j<4;j++){gd+=metal::dot(float4(uint4(gb[j])&uint4(3,12,48,192)),inputs[j]);ud+=metal::dot(float4(uint4(ub[j])&uint4(3,12,48,192)),inputs[j]);}
+   g[r]+=(gd-input_sum)*float(sg[idx/8]);u[r]+=(ud-input_sum)*float(su[idx/8]);
+  }
+ }
+ for(uint r=0;r<2;r++) {
+  float gate=float(half(simd_sum(g[r]))),up=float(half(simd_sum(u[r])));
+  if(lane==0 && row+r<p.u[1])y[row+r]=half((gate/(1.f+exp(-gate)))*up);
+ }
+}
+
 kernel void dense_mv(device const half *w [[buffer(0)]], device const half *x [[buffer(1)]],
     device half *out [[buffer(2)]], constant Params &p [[buffer(15)]], uint row [[threadgroup_position_in_grid]],
     uint tid [[thread_index_in_threadgroup]],uint lane [[thread_index_in_simdgroup]]) {
@@ -236,6 +256,27 @@ kernel void delta(device const half *q [[buffer(0)]],device const half *k [[buff
         output=simd_sum(output);if(lane==0)out[token*hv*dv+row]=half(output);
     }
     for(uint j=lane;j<dk;j+=32)state[base+j]=st[j/32];
+}
+
+// The native 128-wide recurrent head fits four contiguous FP32 state values per
+// lane. Vector loads avoid reloading strided q/k coefficients inside scalar loops.
+kernel void delta128(device const half *q [[buffer(0)]],device const half *k [[buffer(1)]],
+    device const half *qkv [[buffer(2)]],device const float2 *gates [[buffer(3)]],device float *state [[buffer(4)]],
+    device half *out [[buffer(5)]],constant Params &p [[buffer(15)]],uint gid [[thread_position_in_grid]],uint lane [[thread_index_in_simdgroup]]) {
+    uint row=gid/32,dv=p.u[1],hv=p.u[2],hk=p.u[3];if(row>=hv*dv)return;
+    uint head=row/dv,kh=head/(hv/hk),base=row*128+lane*4;
+    float4 st=*((device const float4*)(state+base));
+    for(uint token=0;token<max(1u,p.u[4]);token++) {
+        float2 gate=gates[token*hv+head];uint index=(token*hk+kh)*128+lane*4;
+        float4 key=float4(*((device const half4*)(k+index)));
+        float4 query=float4(*((device const half4*)(q+index)));
+        st*=gate.x;
+        float memory=simd_sum(dot(st,key));
+        float correction=(float(qkv[token*(2*hk*128+hv*dv)+2*hk*128+row])-memory)*gate.y;
+        st+=key*correction;
+        float value=simd_sum(dot(st,query));if(lane==0)out[token*hv*dv+row]=half(value);
+    }
+    *((device float4*)(state+base))=st;
 }
 
 kernel void swiglu(device const half *gate [[buffer(0)]],device const half *x [[buffer(1)]],
